@@ -1,0 +1,29 @@
+/* GMGN/DeBot 页面 FOMO 地址标签 */
+.ftag-wrap { display: inline; }
+.ftag {
+  display: inline-block;
+  font-size: 10px !important;
+  line-height: 1.4 !important;
+  font-weight: 600;
+  padding: 1px 6px;
+  margin: 0 4px;
+  border-radius: 999px;
+  vertical-align: middle;
+  cursor: default;
+  white-space: nowrap;
+}
+.ftag-real {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+  border: 1px solid rgba(22, 163, 74, 0.4);
+}
+.ftag-fake {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.1);
+  border: 1px solid rgba(220, 38, 38, 0.4);
+}
+.ftag-mine {
+  color: #22d3ee;
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.4);
+}

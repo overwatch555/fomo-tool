@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>FOMO 交易看板</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo">F</div>
+  <h1>FOMO 交易看板<small>prod-api.fomo.family</small></h1>
+  <div class="spacer"></div>
+  <label class="toggle"><input type="checkbox" id="autoToggle" checked> 自动刷新</label>
+  <button class="btn" id="refreshBtn">⟳ 刷新</button>
+  <button class="btn" id="settingsBtn">⚙ 会话</button>
+  <div class="session-pill" id="livePill" title="WebSocket 实时行情状态"><span class="dot"></span><span id="liveText">实时连接中…</span></div>
+  <div class="session-pill" id="sessionPill"><span class="dot"></span><span id="sessionText">检测中…</span></div>
+</header>
+
+<div class="cards">
+  <div class="card"><div class="label">跟单信号（近 1 小时）</div><div class="value" id="statSignals">-</div><div class="sub">实时交易动态</div></div>
+  <div class="card"><div class="label">今日涨幅王</div><div class="value up" id="statTopGain">-</div><div class="sub" id="statTopGainName">-</div></div>
+  <div class="card"><div class="label">排行榜24h盈亏总和</div><div class="value" id="statPnlSum">-</div><div class="sub">Top 50</div></div>
+  <div class="card"><div class="label">榜单总交易额</div><div class="value" id="statVolumeSum">-</div><div class="sub">Top 50</div></div>
+</div>
+
+<!-- 搜索栏 -->
+<div class="searchbar">
+  <input id="searchInput" class="search-input" placeholder="🔍 粘贴 代币地址(CA) / 钱包地址 / 用户名，回车搜索" spellcheck="false">
+  <button class="btn primary" id="searchBtn">搜索</button>
+</div>
+<div class="search-hint" id="searchHint"></div>
+
+<!-- 搜索结果 -->
+<div id="searchResult" class="panel search-result" style="display:none">
+  <div class="search-head">
+    <h2 id="srTitle">搜索结果</h2>
+    <button class="btn" id="srClose">× 关闭</button>
+  </div>
+  <div id="srContent"></div>
+</div>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="leaderboard">排行榜</button>
+  <button class="tab" data-tab="signals">跟单信号</button>
+  <button class="tab" data-tab="trending">热门代币</button>
+  <button class="tab" data-tab="feed">交易动态</button>
+</nav>
+
+<div class="panel">
+  <div id="leaderboard" class="tabview">
+    <table>
+      <thead><tr>
+        <th>#</th><th>交易者</th><th>关注者</th><th>交易数</th><th>总交易额</th><th>24h盈亏</th><th>持仓代币</th>
+      </tr></thead>
+      <tbody id="lbBody"></tbody>
+    </table>
+  </div>
+
+  <div id="signals" class="tabview" style="display:none">
+    <div class="signal-toolbar">
+      <div>
+        <div class="section-title">跟单信号 <span class="badge new" id="sigCountBadge">0 条</span></div>
+        <div class="section-sub" id="sigMeta">正在读取实时交易信号…</div>
+      </div>
+      <div class="signal-filter-group">
+        <button class="filter-tab-btn active" data-sig-filter="all">全部信号</button>
+        <button class="filter-tab-btn" data-sig-filter="top">⚡ 仅看 Top 50</button>
+        <button class="filter-tab-btn" data-sig-filter="top_buy">🔥 Top 50 仅买入</button>
+      </div>
+    </div>
+    <div class="signal-table-wrapper">
+      <table>
+        <thead><tr>
+          <th>交易者</th><th>买 / 卖 动作</th><th>代币信息 / 可复制 CA</th><th>持仓状况</th><th>成交明细</th><th>时间</th>
+        </tr></thead>
+        <tbody id="sigBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="trending" class="tabview" style="display:none">
+    <div class="live-badge" id="trendingBadge" style="display:none">⚡ WebSocket 实时推送中 · 每秒更新</div>
+    <table>
+      <thead><tr>
+        <th>代币</th><th>价格</th><th>1h</th><th>24h</th><th>24h成交额</th><th>市值</th><th>持有人</th><th>买卖比24h</th><th>链</th>
+      </tr></thead>
+      <tbody id="trdBody"></tbody>
+    </table>
+  </div>
+
+  <div id="feed" class="tabview" style="display:none">
+    <div class="activity-head">
+      <div>
+        <div class="section-title">交易动态 <span class="badge new" id="feedCountBadge">0 条</span></div>
+        <div class="section-sub">全网市场级事件流 · 实时监控巨鲸集体异动、新币上线与聪明钱动向</div>
+      </div>
+      <div class="activity-legend"><span class="legend-dot buy"></span>买入 <span class="legend-dot sell"></span>卖出 <span class="legend-dot new"></span>新币/观点</div>
+    </div>
+
+    <!-- 动态分类过滤胶囊 -->
+    <div class="feed-filters" id="feedFilters">
+      <button class="feed-filter-btn active" data-feed-filter="all">🔥 全部动态</button>
+      <button class="feed-filter-btn" data-feed-filter="collective">👥 巨鲸/集体异动</button>
+      <button class="feed-filter-btn" data-feed-filter="new_token">⚡ 新币/暴涨</button>
+      <button class="feed-filter-btn" data-feed-filter="thesis">💡 交易观点</button>
+      <button class="feed-filter-btn" data-feed-filter="milestone">🏆 盈利里程碑</button>
+    </div>
+
+    <div id="feedBody" class="activity-list"></div>
+  </div>
+</div>
+
+<div class="footnote">数据来源：fomo.family 官方 API（仅在你自己的账号会话下读取）。JWT 会在你浏览 fomo.family 时自动更新。</div>
+
+<!-- 会话设置弹窗 -->
+<div class="modal-mask" id="settingsModal">
+  <div class="modal">
+    <h3>登录会话管理</h3>
+    <p>扩展会自动捕获你浏览 <b>fomo.family</b> 时的登录态（JWT）。如果显示未登录，请选择以下任一方式：</p>
+    <ol style="font-size:13px;color:var(--muted);margin:0 0 14px 18px;line-height:1.9">
+      <li><b>方式一</b>：点击下方"打开 fomo.family"在新标签登录一次，返回本页点刷新。</li>
+      <li><b>方式二</b>：手动粘贴 JWT（从抓包工具导出的 session.json 中复制 jwt 字段）。</li>
+    </ol>
+    <button class="btn primary" id="openFomoBtn" style="width:100%">打开 fomo.family 并登录</button>
+    <textarea id="jwtInput" placeholder="粘贴 Privy JWT 到此处…" class="mt8"></textarea>
+    <div class="row">
+      <button class="btn" id="clearSessionBtn">清除会话</button>
+      <button class="btn" id="saveJwtBtn">保存会话</button>
+      <button class="btn primary" id="closeModalBtn">完成</button>
+    </div>
+    <hr class="mt8">
+    <h3>推送设置</h3>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 10px">后台每 60 秒检测排行榜 Top 交易者的买入动作，触发桌面通知。</p>
+    <div class="row">
+      <label class="toggle"><input type="checkbox" id="pushToggle" checked> Top 榜买入推送</label>
+      <label style="font-size:13px;color:var(--muted)">名次范围 <input type="number" id="pushTopN" value="30" min="1" max="50" style="width:70px;margin-left:6px;padding:4px 8px;background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--text)"></label>
+    </div>
+    <div class="push-test" id="pushTest" style="display:none"></div>
+  </div>
+</div>
+
+<!-- 用户详情抽屉 -->
+<div class="drawer-mask" id="userDrawerMask">
+  <div class="drawer" id="userDrawer">
+    <div class="drawer-head">
+      <h2>用户详情</h2>
+      <button class="btn" id="drawerClose">✕</button>
+    </div>
+    <div class="drawer-body" id="drawerBody">
+      <div class="loading">加载中…</div>
+    </div>
+  </div>
+</div>
+
+<script src="common.js"></script>
+<script src="address_db.js"></script>
+<script src="rpc.js"></script>
+<script src="lookup_evm.js"></script>
+<script src="lookup_sol.js"></script>
+<script src="lookup.js"></script>
+<script src="search.js"></script>
+<script src="user.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "FOMO 交易看板",
+  "version": "1.0.0",
+  "description": "FOMO 社交加密交易看板：排行榜 / 跟单信号 / 热门代币实时行情。自动复用你在 fomo.family 的登录态。",
+  "permissions": ["storage", "webRequest", "alarms", "notifications"],
+  "host_permissions": [
+    "https://prod-api.fomo.family/*",
+    "https://fomo.family/*",
+    "https://translate.googleapis.com/*",
+    "https://mainnet.base.org/*",
+    "https://base.llamarpc.com/*",
+    "https://bsc-dataseed1.binance.org/*",
+    "https://bsc-dataseed2.binance.org/*",
+    "https://bsc.llamarpc.com/*",
+    "https://rpc.ethos.cool/*",
+    "https://eth.llamarpc.com/*",
+    "https://rpc.ankr.com/*",
+    "https://api.mainnet-beta.solana.com/*",
+    "https://api.relay.link/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://*.gmgn.ai/*", "https://*.debot.ai/*"],
+      "js": ["address_db.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "FOMO 交易看板",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}

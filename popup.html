@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>FOMO 看板</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">F</div>
+  <div class="title">FOMO 看板</div>
+  <div class="spacer"></div>
+  <div class="status" id="status"><span class="dot"></span><span id="statusText">检测中…</span></div>
+</div>
+
+<div class="search">
+  <input id="searchInput" class="search-input" placeholder="🔍 代币CA / 钱包 / 用户名" spellcheck="false">
+  <button class="search-btn" id="searchBtn">搜</button>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="leaderboard">排行榜</div>
+  <div class="tab" data-tab="signals">信号</div>
+  <div class="tab" data-tab="trending">热门</div>
+</div>
+
+<div class="body" id="body"><div class="empty">加载中…</div></div>
+
+<div class="footer">
+  <button class="btn" id="refreshBtn">刷新</button>
+  <button class="btn primary" id="dashboardBtn">打开完整看板 →</button>
+</div>
+
+<script src="common.js"></script>
+<script src="address_db.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>
