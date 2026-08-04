@@ -100,6 +100,19 @@
   });
 
   document.getElementById("refreshBtn").addEventListener("click", () => { refreshStatus(); load(); });
+  document.getElementById("exportWalletsBtn").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    const old = btn.textContent;
+    try {
+      const n = await exportRealWallets();
+      btn.textContent = `✓ ${n} 个`;
+      btn.disabled = true;
+      setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1800);
+    } catch (_e) {
+      btn.textContent = "✗ 失败";
+      setTimeout(() => { btn.textContent = old; }, 1800);
+    }
+  });
   document.getElementById("dashboardBtn").addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
   });

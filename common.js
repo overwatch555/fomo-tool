@@ -329,6 +329,84 @@ async function translateInto(container, map) {
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length) }, worker));
 }
 
+/* ================= 一键导出真实钱包地址库 =================
+ * 数据来源：
+ *  ① 预置反查库 __FOMO_DB.users 的 evmReal / solReal（EIP-7702 指纹验证过的真实钱包）
+ *     addrMap 中的 real_evm / real_sol 作为兜底
+ *  ② 本地收录库 myLib（chrome.storage.local 持久化，用户自定义标签）
+ * 导出为 JSON 文件：fomo_real_wallets_YYYY-MM-DD.json
+ */
+async function collectRealWallets() {
+  const rows = new Map(); // addr(lower) -> 记录
+  const put = (row) => {
+    if (!row || !row.address) return;
+    const k = String(row.address).toLowerCase();
+    const prev = rows.get(k);
+    // mylib（用户自定义标签）优先级高于 db 预置库
+    if (!prev || (row.source === "mylib" && prev.source !== "mylib")) rows.set(k, { ...prev, ...row });
+  };
+
+  const db = window.__FOMO_DB;
+  if (db && Array.isArray(db.users)) {
+    for (const u of db.users) {
+      const base = {
+        uid: u.id, handle: u.handle, displayName: u.displayName,
+        followers: u.followers, numTrades: u.numTrades, totalVolume: u.totalVolume,
+        conf: u.conf, note: u.note, source: "db",
+      };
+      if (u.evmReal) put({ ...base, address: u.evmReal, type: "evm", chain: "EVM" });
+      if (u.solReal) put({ ...base, address: u.solReal, type: "sol", chain: "Solana" });
+    }
+  }
+  if (db && db.addrMap) {
+    for (const [addr, m] of Object.entries(db.addrMap)) {
+      if (m.kind === "real_evm" && !rows.has(addr.toLowerCase()))
+        put({ address: addr, type: "evm", chain: "EVM", uid: m.uid, source: "db" });
+      if (m.kind === "real_sol" && !rows.has(addr.toLowerCase()))
+        put({ address: addr, type: "sol", chain: "Solana", uid: m.uid, source: "db" });
+    }
+  }
+
+  // 本地收录库（用户自定义的真实钱包）
+  try {
+    const s = await chrome.storage.local.get("fomoMyLib");
+    const myLib = Array.isArray(s.fomoMyLib) ? s.fomoMyLib : [];
+    for (const it of myLib) {
+      const isEVM = /^0x/i.test(it.addr);
+      put({
+        address: it.addr, type: isEVM ? "evm" : "sol", chain: isEVM ? "EVM" : "Solana",
+        label: it.label || "已收录", note: it.note || "", addedAt: it.addedAt, source: "mylib",
+      });
+    }
+  } catch (_e) {}
+
+  const list = Array.from(rows.values());
+  list.sort((a, b) => (a.type === b.type ? String(a.address).localeCompare(b.address) : a.type === "evm" ? -1 : 1));
+  return list;
+}
+
+/* 一键导出：收集全部真实钱包地址，按「完整地址 fomo用户名 [#排名]」每行一条下载 txt，返回导出条数
+ * 排名来自排行榜 uid→名次（ensureRankMap，background 缓存）；本地收录无用户信息的显示自定义标签 */
+async function exportRealWallets() {
+  const wallets = await collectRealWallets();
+  let rankMap = {};
+  try { rankMap = await ensureRankMap(); } catch (_e) {}
+  const lines = wallets.map((w) => {
+    const user = w.source === "mylib" ? (w.label || "本地收藏") : ("@" + (w.handle || w.displayName || "未知用户"));
+    const rank = w.uid && rankMap[w.uid] ? " #" + rankMap[w.uid] : "";
+    return w.address + " " + user + rank;
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "fomo_real_wallets_" + new Date().toISOString().slice(0, 10) + ".txt";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+  return wallets.length;
+}
+
 /* 全局图片加载失败兜底(MV3 CSP 禁止 inline onerror, 这里统一处理) */
 document.addEventListener("error", (e) => {
   const t = e.target;

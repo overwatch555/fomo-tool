@@ -620,6 +620,18 @@
     refreshSessionUI();
     loadAll();
   });
+  $("#exportWalletsBtn").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    const old = btn.textContent;
+    try {
+      const n = await exportRealWallets();
+      btn.textContent = `✓ ${n} 个地址`;
+      setTimeout(() => { btn.textContent = old; }, 1800);
+    } catch (_e) {
+      btn.textContent = "✗ 导出失败";
+      setTimeout(() => { btn.textContent = old; }, 1800);
+    }
+  });
   $("#autoToggle").addEventListener("change", (e) => {
     autoRefresh = e.target.checked;
     if (autoRefresh) startAuto();
