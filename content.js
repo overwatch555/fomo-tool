@@ -1,7 +1,7 @@
 /* content.js — 在 GMGN / DeBot 页面上给 FOMO 已知地址打标签
  * 库: window.__FOMO_DB (address_db.js, 与 content.js 同集合加载,共享隔离 world)
  * 真实钱包 → 绿标 "FOMO·handle"; 展示假地址 → 红标 "⚠handle·展示"
- * 只读,不改页面数据,仅插入标签元素。
+ * 只读,不改页面数据,仅插入标签元素。    
  */
 (() => {
   "use strict";
