@@ -641,8 +641,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     chrome.storage.local.get("jwt").then((s) => { lastJwt = s.jwt || null; });
     // WS 若因 SW 休眠断开则重连
     if (!wsConnected) wsConnect();
-    // TG 中继若断开则重连
-    if (!tgWs || tgWs.readyState !== WebSocket.OPEN) tgWsConnect();
     // Top 榜买入推送 + 排行映射
     pollTick();
   }
@@ -660,7 +658,12 @@ function tgNotifyState(on) {
 }
 
 async function tgHandleMessage(msg) {
-  if (!msg || !msg.msg_id) return;
+  if (!msg) return;
+  if (!msg.msg_id) {
+    // 中继若改用其他消息结构（如 {type,data} 包装），这里打日志便于识别
+    console.warn("[TG] 收到未知格式消息:", JSON.stringify(msg).slice(0, 300));
+    return;
+  }
   // 1. 存历史（供 popup / dashboard 展示）
   try {
     const { tgHistory = [] } = await chrome.storage.local.get("tgHistory");
@@ -694,20 +697,40 @@ async function tgHandleMessage(msg) {
 
 function tgWsConnect() {
   let socket;
-  try { socket = new WebSocket(TG_WS_URL); } catch (_e) { setTimeout(tgWsConnect, 5000); return; }
+  try { socket = new WebSocket(TG_WS_URL); } catch (e) {
+    // 常见原因：manifest 缺少 ws:// 的 host 权限 → 构造 WebSocket 直接抛 SecurityError
+    console.error("[TG] WebSocket 创建失败:", e);
+    chrome.storage.session.set({ tgWsError: String((e && e.message) || e), tgWsTs: Date.now() }).catch(() => {});
+    setTimeout(tgWsConnect, 5000);
+    return;
+  }
   tgWs = socket;
-  socket.onopen = () => { tgRetryMs = 1000; tgNotifyState(true); };
+  socket.onopen = () => {
+    tgRetryMs = 1000;
+    tgNotifyState(true);
+    console.log("[TG] 已连接", TG_WS_URL);
+    chrome.storage.session.set({ tgWsError: "" }).catch(() => {});
+  };
   socket.onmessage = (ev) => {
     let m;
-    try { m = JSON.parse(ev.data); } catch { return; }
+    try { m = JSON.parse(ev.data); } catch {
+      console.warn("[TG] 收到非 JSON 消息:", String(ev.data).slice(0, 200));
+      return;
+    }
     tgHandleMessage(m);
   };
-  socket.onclose = () => {
+  socket.onclose = (ev) => {
     tgNotifyState(false);
+    console.warn("[TG] 连接关闭 code=" + ev.code + (ev.reason ? " reason=" + ev.reason : ""));
+    chrome.storage.session.set({ tgWsError: "连接关闭 code=" + ev.code + " " + (ev.reason || "") }).catch(() => {});
     setTimeout(tgWsConnect, tgRetryMs);
     tgRetryMs = Math.min(tgRetryMs * 2, 15000);
   };
-  socket.onerror = () => {};
+  socket.onerror = () => {
+    // 无 event 详情，onclose 随后触发；这里落盘便于排查（服务器未启动/端口不通/防火墙等）
+    console.error("[TG] 连接错误（服务器未启动 / 端口不通 / 防火墙拦截？）");
+    chrome.storage.session.set({ tgWsError: "连接错误：中继服务器不可达（请确认 43.155.204.242:8765 已启动且放行端口）" }).catch(() => {});
+  };
 }
 
 /* TG 通知点击 → 打开完整看板 */
