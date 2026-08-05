@@ -691,10 +691,14 @@
   /* ---------- 推送设置 ---------- */
   const pushToggle = $("#pushToggle");
   const pushTopN = $("#pushTopN");
-  chrome.storage.local.get(["pushEnabled", "pushTopN"]).then((c) => {
+  const pushMinUsd = $("#pushMinUsd");
+  const pushThesisToggle = $("#pushThesisToggle");
+  chrome.storage.local.get(["pushEnabled", "pushTopN", "pushMinUsd", "pushThesis"]).then((c) => {
     if (pushToggle) pushToggle.checked = c.pushEnabled !== false;
     topSignalThreshold = c.pushTopN || 30;
     if (pushTopN) pushTopN.value = topSignalThreshold;
+    if (pushMinUsd) pushMinUsd.value = c.pushMinUsd != null ? c.pushMinUsd : 100;
+    if (pushThesisToggle) pushThesisToggle.checked = c.pushThesis !== false;
     renderSignals(latestSignals);
   });
   if (pushToggle) {
@@ -711,19 +715,40 @@
       renderSignals(latestSignals);
     });
   }
-  // 后台推送 → 看板显示最近推送
+  if (pushMinUsd) {
+    pushMinUsd.addEventListener("change", () => {
+      const v = Math.max(1, Number(pushMinUsd.value) || 100);
+      pushMinUsd.value = v;
+      chrome.storage.local.set({ pushMinUsd: v });
+    });
+  }
+  if (pushThesisToggle) {
+    pushThesisToggle.addEventListener("change", () => {
+      chrome.storage.local.set({ pushThesis: pushThesisToggle.checked });
+    });
+  }
+  // 后台推送 → 看板显示最近推送（买入 / 观点）
+  const addPushItem = (text) => {
+    const box = document.getElementById("pushTest");
+    if (!box) return;
+    box.style.display = "";
+    const item = document.createElement("div");
+    item.className = "push-item";
+    item.textContent = text;
+    box.prepend(item);
+    while (box.children.length > 8) box.lastChild.remove();
+  };
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.action === "topBuyPush" && window.__fomoSearch) {
-      const box = document.getElementById("pushTest");
-      if (!box) return;
-      box.style.display = "";
+    if (msg && msg.action === "topBuyPush") {
       const s = msg.sig || {};
-      const line = `${esc(s.displayName || "")} 买入 ${esc(s.ticker || "")} · ${msg.rank ? "#" + msg.rank : ""}`;
-      const item = document.createElement("div");
-      item.className = "push-item";
-      item.textContent = line + " · " + timeAgo(s.createdAt);
-      box.prepend(item);
-      while (box.children.length > 8) box.lastChild.remove();
+      const ticker = s.ticker || (s.token && s.token.symbol) || "";
+      addPushItem(`${esc(s.displayName || s.userHandle || "")} 买入 ${esc(ticker)} ${msg.rank ? "#" + msg.rank : ""}${msg.byAmount && s.usdAmount ? " · $" + esc(s.usdAmount) : ""} · ${timeAgo(s.createdAt)}`);
+    }
+    if (msg && msg.action === "thesisPush") {
+      const it = msg.item || {};
+      const b = it.body || {};
+      const text = (b.text || b.message || b.comment || "").toString().slice(0, 60);
+      addPushItem(`📣 ${esc(it.displayName || it.userHandle || "")} 发布观点${esc(b.tokenSymbol || b.tokenName || "") ? " · " + esc(b.tokenSymbol || b.tokenName) : ""} · 粉丝 ${esc(msg.followers || "")}${text ? "：" + esc(text) : ""} · ${timeAgo(it.createdAt)}`);
     }
   });
 

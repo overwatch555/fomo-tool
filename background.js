@@ -115,12 +115,27 @@ let lbBackoffMs = 60000; // 退避时长（指数增长到 5 分钟）
 const pushedTradeKeys = new Set(); // 本次运行去重
 const lastPushByUser = new Map(); // uid -> 时间戳（同用户限频 5 分钟）
 const PUSH_MAX = 30; // 默认推送 Top 30
+const PUSH_MIN_USD = 100; // 扩展规则：任何人买入金额阈值(默认 $100)
+const PUSH_THESIS_MIN_FOLLOWERS = 1000; // 扩展规则：发观点用户的最低粉丝数
+
+const followersByUid = new Map(); // uid -> 粉丝数（排行榜/用户详情/条目自带 汇聚缓存）
+
+function bgFmtNum(n) {
+  n = Number(n || 0);
+  if (!isFinite(n)) return "-";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e4) return (n / 1e3).toFixed(0) + "K";
+  return String(Math.round(n));
+}
 
 function updateRankMap(leaderboard) {
   if (!Array.isArray(leaderboard)) return;
   lbRankMap.clear();
   leaderboard.forEach((u, i) => {
-    if (u && u.id) lbRankMap.set(u.id, i + 1);
+    if (u && u.id) {
+      lbRankMap.set(u.id, i + 1);
+      if (u.followers != null) followersByUid.set(u.id, Number(u.followers));
+    }
   });
   lbRankTs = Date.now();
 }
@@ -153,24 +168,55 @@ function bgShortUsd(n) {
   return "$" + n.toFixed(0);
 }
 
-/* 判定是否应推送：Top 榜用户 买入 事件（type === swap_buy） */
-function shouldPush(sig, topN) {
-  if (!sig || sig.type !== "swap_buy") return null;
-  const rank = lbRankMap.get(sig.userId);
-  if (!rank || rank > topN) return null;
-  const now = Date.now();
-  const last = lastPushByUser.get(sig.userId) || 0;
-  if (now - last < 5 * 60 * 1000) return null; // 同用户 5 分钟限频
-  return rank;
+/* 解析交易条目的真实用户ID：
+ * tradingActivity 条目的顶层 userId 常为 null，真实用户在嵌套 body.topTraders[0].id
+ * （与前端 dashboard 去匿名逻辑保持一致，否则永远匹配不上排行榜 → 永不推送） */
+function sigUid(sig) {
+  if (!sig) return null;
+  if (sig.userId) return sig.userId;
+  const tt = sig.body && Array.isArray(sig.body.topTraders) && sig.body.topTraders[0];
+  return (tt && tt.id) || null;
 }
 
-async function pushTopBuy(sig, rank) {
-  const key = String(sig.tradeId || sig.id || "");
+function sigDisplayName(sig) {
+  if (sig && sig.displayName) return sig.displayName;
+  const tt = sig && sig.body && Array.isArray(sig.body.topTraders) && sig.body.topTraders[0];
+  return (tt && (tt.displayName || tt.userHandle)) || null;
+}
+
+/* 判定是否应推送（两条规则，命中其一即可）：
+ * ① Top 榜用户买入：type === swap_buy 且 排行 ≤ topN（原有规则，金额不限）
+ * ② 全网大额买入：任何人 swap_buy 且 usdAmount ≥ minUsd（默认 $100）
+ * 返回 { uid, rank, byAmount, usdAmount }；都不命中返回 null。
+ * 注意：tradingActivity 顶层 userId 常为 null，真实用户在 body.topTraders[0]，
+ * 由 sigUid() 统一兜底，否则永远匹配不上排行榜 → 永不推送。
+ */
+function shouldPush(sig, topN, minUsd) {
+  if (!sig || sig.type !== "swap_buy") return null;
+  const uid = sigUid(sig);
+  if (!uid) return null;
+  const rank = lbRankMap.get(uid);
+  const usdAmount = Number(sig.usdAmount || 0);
+  const byAmount = usdAmount >= Number(minUsd || 0);
+  const topHit = rank && rank <= topN;
+  if (!topHit && !byAmount) return null;
+  const now = Date.now();
+  const last = lastPushByUser.get(uid) || 0;
+  if (now - last < 5 * 60 * 1000) return null; // 同用户 5 分钟限频
+  return { uid, rank: topHit ? rank : 0, byAmount, usdAmount };
+}
+
+async function pushTopBuy(sig, info) {
+  const uid = sigUid(sig) || "";
+  // 去重键：优先交易 ID；tradingActivity 条目通常没有顶层 tradeId/id，
+  // 退回 用户+代币+金额+时间 组合键，避免 key 为空导致永远不推送
+  const key = String(sig.tradeId || sig.id || "") ||
+    [uid, sig.tokenAddress || (sig.token && sig.token.address) || "", sig.usdAmount || "", sig.createdAt || ""].join("|");
   if (!key) return;
   if (pushedTradeKeys.has(key)) return;
   // 同用户 5 分钟限频（双保险：shouldPush 也查，这里兜底防绕过）
   const now = Date.now();
-  const last = lastPushByUser.get(sig.userId) || 0;
+  const last = lastPushByUser.get(uid) || 0;
   if (now - last < 5 * 60 * 1000) return;
   // 跨生命周期去重（storage 持久化）
   try {
@@ -183,27 +229,34 @@ async function pushTopBuy(sig, rank) {
     await chrome.storage.local.set({ fomoPushedTrades: arr });
   } catch (_e) { return; }
 
-  lastPushByUser.set(sig.userId, Date.now());
+  lastPushByUser.set(uid, Date.now());
   const price = Number(sig.price || 0);
   const mcap = Number(sig.marketCap || 0);
-  const title = `#${rank} ${sig.displayName || "大V"} 买入 ${sig.ticker || "?"}`;
+  const followers = followersByUid.get(uid);
+  const name = sigDisplayName(sig) || "大V";
+  const ticker = sig.ticker || (sig.token && sig.token.symbol) || "?";
+  // 标题：Top 榜命中显示名次；全网大额命中显示金额
+  const title = info && info.rank
+    ? `#${info.rank} ${name} 买入 ${ticker}`
+    : `🔔 ${name} 买入 ${ticker}（${bgShortUsd(info && info.usdAmount)}）`;
   const line = [
-    bgShortUsd(sig.usdAmount) ? "金额 " + bgShortUsd(sig.usdAmount) : "",
+    bgShortUsd(info && info.usdAmount) ? "金额 " + bgShortUsd(info.usdAmount) : "",
     price > 0 ? "@$" + price.toFixed(price >= 1 ? 2 : 6) : "",
     mcap > 0 ? "市值 " + bgShortUsd(mcap) : "",
     bgChainName(sig.networkId),
+    followers ? "粉丝 " + bgFmtNum(followers) : "",
   ].filter(Boolean).join(" · ");
   try {
     await chrome.notifications.create("topbuy-" + key, {
       type: "basic",
       iconUrl: chrome.runtime.getURL("icons/icon128.png"),
       title,
-      message: line || (sig.ticker || "新交易"),
+      message: line || (ticker + " 新交易"),
       priority: 2,
     });
   } catch (_e) {}
   // 广播给打开着的 dashboard（可显示最近推送）
-  chrome.runtime.sendMessage({ action: "topBuyPush", sig, rank }).catch(() => {});
+  chrome.runtime.sendMessage({ action: "topBuyPush", sig, rank: (info && info.rank) || 0, byAmount: !!(info && info.byAmount) }).catch(() => {});
 }
 
 /* ---------- 2.6 tradingActivity 统一缓存 ----------
@@ -241,13 +294,14 @@ async function taFetch(forceRefresh = false) {
 
 async function pollTopBuys() {
   let cfg = {};
-  try { cfg = await chrome.storage.local.get(["pushEnabled", "pushTopN"]); } catch (_e) {}
+  try { cfg = await chrome.storage.local.get(["pushEnabled", "pushTopN", "pushMinUsd"]); } catch (_e) {}
   if (cfg.pushEnabled === false) return;
   const topN = cfg.pushTopN || PUSH_MAX;
+  const minUsd = cfg.pushMinUsd != null ? Number(cfg.pushMinUsd) : PUSH_MIN_USD;
   const cache = await taFetch();
   for (const sig of cache.items) {
-    const rank = shouldPush(sig, topN);
-    if (rank) pushTopBuy(sig, rank);
+    const info = shouldPush(sig, topN, minUsd);
+    if (info) pushTopBuy(sig, info);
   }
 }
 
@@ -256,20 +310,160 @@ async function handleRealtimeTradeSignal(payload) {
   if (!payload) return;
   const items = Array.isArray(payload) ? payload : (payload.items || [payload]);
   let cfg = {};
-  try { cfg = await chrome.storage.local.get(["pushEnabled", "pushTopN"]); } catch (_e) {}
+  try { cfg = await chrome.storage.local.get(["pushEnabled", "pushTopN", "pushMinUsd"]); } catch (_e) {}
   if (cfg.pushEnabled === false) return;
   const topN = cfg.pushTopN || PUSH_MAX;
+  const minUsd = cfg.pushMinUsd != null ? Number(cfg.pushMinUsd) : PUSH_MIN_USD;
 
   for (const item of items) {
     const sig = item.trade || item.signal || item;
-    if (sig && sig.userId) {
-      const rank = shouldPush(sig, topN);
-      if (rank) pushTopBuy(sig, rank);
+    if (sig && sigUid(sig)) {
+      const info = shouldPush(sig, topN, minUsd);
+      if (info) pushTopBuy(sig, info);
     }
   }
 }
 
-/* 心跳驱动：10 秒轮询（Top 榜买入推送），排行榜映射每 60 秒刷新一次 */
+/* ---------- 2.7 观点推送（粉丝 ≥1k 的用户发布观点 thesis/manual） ---------- */
+const thesisKeys = new Set();      // 本次运行去重
+const followersUnknown = new Set(); // uid 已尝试拉取但无粉丝数据（避免反复打用户详情接口）
+let feedCache = { items: [], ts: 0 };
+let feedInFlight = null;
+let feedBackoffUntil = 0;
+let feedBackoffMs = 60000;
+
+/* 获取作者粉丝数：优先排行榜汇聚缓存 → 条目自带 → 用户详情接口兜底 */
+async function getFollowers(uid, item) {
+  if (followersByUid.has(uid)) return followersByUid.get(uid);
+  if (followersUnknown.has(uid)) return 0;
+  const b = item.body || {};
+  const cand = Number(item.followers) ||
+    (item.user && Number(item.user.followers)) ||
+    (b.user && Number(b.user.followers)) ||
+    (b.followers != null ? Number(b.followers) : 0);
+  if (cand) { followersByUid.set(uid, cand); return cand; }
+  // 兜底：只有拿到 handle 才去拉用户详情（可能加重接口压力，缺失则放弃）
+  const handle = item.userHandle || (item.user && item.user.userHandle) || b.userHandle;
+  if (!handle) { followersUnknown.add(uid); return 0; }
+  try {
+    const r = await call("/v2/users/userHandle/" + encodeURIComponent(handle));
+    if (r.ok && r.status === 200) {
+      const ro = r.data.responseObject || r.data || {};
+      const u = ro.user || ro || {};
+      const n = Number(u.followers || 0);
+      if (n) followersByUid.set(uid, n);
+      else followersUnknown.add(uid);
+      return n;
+    }
+    if (r.status === 429 || r.status === 404) followersUnknown.add(uid);
+  } catch (_e) { followersUnknown.add(uid); }
+  return 0;
+}
+
+async function pushThesis(item) {
+  const b = item.body || {};
+  const uid = item.userId || b.userId || (item.user && item.user.id);
+  if (!uid) return;
+  const handle = item.userHandle || (item.user && item.user.userHandle) || b.userHandle;
+  const name = item.displayName || (item.user && item.user.displayName) || b.displayName || handle || "大V";
+  // 去重键：用户+条目ID+时间（feed 条目可能无顶层 id，退回时间戳）
+  const key = "thesis|" + uid + "|" + (item.id || item.feedItemId || "") + "|" + (item.createdAt || "");
+  if (!key || thesisKeys.has(key)) return;
+  const now = Date.now();
+  const last = lastPushByUser.get(uid) || 0;
+  if (now - last < 5 * 60 * 1000) return; // 同用户 5 分钟限频
+  const followers = await getFollowers(uid, item);
+  if (followers < PUSH_THESIS_MIN_FOLLOWERS) return; // 粉丝不足不推送
+  // 跨生命周期去重（storage 持久化）
+  try {
+    const stored = await chrome.storage.local.get("fomoPushedThesis");
+    const arr = stored.fomoPushedThesis || [];
+    if (arr.includes(key)) return;
+    thesisKeys.add(key);
+    arr.push(key);
+    if (arr.length > 2000) arr.splice(0, arr.length - 1500);
+    await chrome.storage.local.set({ fomoPushedThesis: arr });
+  } catch (_e) { return; }
+
+  lastPushByUser.set(uid, Date.now());
+  const text = String(b.text || b.message || b.comment || b.thesisText || b.entryMessage || "").trim();
+  const token = b.tokenSymbol || b.tokenName || item.ticker ||
+    (b.token && (b.token.symbol || b.token.name)) || "";
+  const title = `📣 ${name} 发布观点${token ? " · " + token : ""}`;
+  const line = [
+    text ? text.slice(0, 120) : "",
+    "粉丝 " + bgFmtNum(followers),
+    token ? "代币 " + token : "",
+  ].filter(Boolean).join(" | ");
+  try {
+    await chrome.notifications.create("thesis-" + key, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title,
+      message: line || "新观点",
+      priority: 2,
+    });
+  } catch (_e) {}
+  // 广播给打开着的 dashboard（可显示最近推送）
+  chrome.runtime.sendMessage({ action: "thesisPush", item, followers }).catch(() => {});
+}
+
+/* /feed 统一缓存（只取 thesis_created / manual 两类，30s 缓存 + 429 退避，防限流） */
+async function feedFetch() {
+  const now = Date.now();
+  if (feedCache.ts && now - feedCache.ts < 30000) return feedCache;
+  if (now < feedBackoffUntil) return feedCache;
+  if (feedInFlight) return feedInFlight;
+  feedInFlight = (async () => {
+    try {
+      const r = await call("/feed", {
+        params: {
+          limit: 50,
+          feedTypes: ["thesis_created", "manual"],
+        },
+      });
+      if (r.ok && r.status === 200) {
+        const ro = r.data.responseObject || r.data || {};
+        feedCache = { items: ro.feed || ro.items || [], ts: Date.now() };
+        feedBackoffMs = 60000;
+      } else if (r.status === 429) {
+        feedBackoffUntil = Date.now() + feedBackoffMs;
+        feedBackoffMs = Math.min(feedBackoffMs * 2, 5 * 60 * 1000);
+      }
+    } catch (_e) {}
+    return feedCache;
+  })();
+  try { return await feedInFlight; } finally { feedInFlight = null; }
+}
+
+async function pollThesis() {
+  let cfg = {};
+  try { cfg = await chrome.storage.local.get(["pushEnabled", "pushThesis"]); } catch (_e) {}
+  if (cfg.pushEnabled === false) return;
+  if (cfg.pushThesis === false) return; // 观点推送独立开关
+  const cache = await feedFetch();
+  for (const item of cache.items) {
+    const t = String(item.feedType || (item.body && item.body.feedType) || item.type || "").toLowerCase();
+    if (!/thesis|manual/.test(t)) continue;
+    await pushThesis(item);
+  }
+}
+
+/* WebSocket feed 主题 → 观点推送（feed 条目非 swap_buy，不会误入买入推送） */
+async function handleRealtimeFeed(payload) {
+  if (!payload) return;
+  const items = Array.isArray(payload) ? payload : (payload.items || [payload]);
+  let cfg = {};
+  try { cfg = await chrome.storage.local.get(["pushEnabled", "pushThesis"]); } catch (_e) {}
+  if (cfg.pushEnabled === false) return;
+  if (cfg.pushThesis === false) return;
+  for (const item of items) {
+    const t = String(item.feedType || (item.body && item.body.feedType) || item.type || "").toLowerCase();
+    if (/thesis|manual/.test(t)) await pushThesis(item);
+  }
+}
+
+/* 心跳驱动：10 秒轮询（买入推送 + 观点推送），排行榜映射每 60 秒刷新一次 */
 let lastPollAt = 0;
 let lastRankRefreshAt = 0;
 async function pollTick() {
@@ -281,11 +475,12 @@ async function pollTick() {
   if (now - lastPollAt < 10000) return;
   lastPollAt = now;
   await pollTopBuys();
+  await pollThesis();
 }
 
 /* 通知点击 → 打开看板 */
 chrome.notifications.onClicked.addListener((id) => {
-  if (id.startsWith("topbuy-")) {
+  if (id.startsWith("topbuy-") || id.startsWith("thesis-")) {
     chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
     chrome.notifications.clear(id);
   }
@@ -397,8 +592,11 @@ function wsConnect() {
           break;
         case "data":
           if (m.topicType === "trending_tokens") handleTrendingPayload(m.payload);
-          if (m.topicType === "trading_activity" || m.topicType === "feed" || m.topicType === "trade") {
+          if (m.topicType === "trading_activity" || m.topicType === "trade") {
             handleRealtimeTradeSignal(m.payload);
+          }
+          if (m.topicType === "feed") {
+            handleRealtimeFeed(m.payload);
           }
           break;
         case "error":

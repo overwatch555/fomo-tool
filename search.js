@@ -119,25 +119,29 @@
 
     let html = `
       <div class="token-overview">
-        <img src="${esc(img)}">
-        <div>
-          <div class="t-name">${esc(tok.name || "未知代币")} <span class="t-sym">${esc(tok.symbol || "")}</span></div>
-          <div class="t-sym" style="margin-top:3px">${esc(chainName(nid))} · ${esc(shortAddr(tok.address, 8))}</div>
+        <div class="t-head">
+          <img src="${esc(img)}">
+          <div class="t-id">
+            <div class="t-name">${esc(tok.name || "未知代币")} <span class="t-sym-pill">${esc(tok.symbol || "")}</span></div>
+            <div class="t-sub">${esc(chainName(nid))} · <span class="t-addr">${esc(shortAddr(tok.address, 8))}</span></div>
+          </div>
+          <div class="t-pricebox">
+            <div class="t-price">${fmtPrice(Number(t.priceUSD))}</div>
+            <div class="t-chg ${pctClass(c24)}">${c24 > 0 ? "▲" : c24 < 0 ? "▼" : "—"} ${fmtPct(c24)}<span>24h</span></div>
+          </div>
         </div>
         <div class="t-grid">
-          <div class="t-item"><div class="k">价格</div><div class="v">${fmtPrice(Number(t.priceUSD))}</div></div>
           <div class="t-item"><div class="k">市值</div><div class="v">${fmtUsd(Number(t.marketCap))}</div></div>
-          <div class="t-item"><div class="k">24h涨跌</div><div class="v ${pctClass(c24)}">${fmtPct(c24)}</div></div>
-          <div class="t-item"><div class="k">1h涨跌</div><div class="v ${pctClass(c1)}">${fmtPct(c1)}</div></div>
           <div class="t-item"><div class="k">24h成交额</div><div class="v">${fmtUsd(Number(t.volume24))}</div></div>
           <div class="t-item"><div class="k">持有人</div><div class="v">${fmtNum(t.holders, 0)}</div></div>
           <div class="t-item"><div class="k">买卖比24h</div><div class="v">${ratio}</div></div>
           <div class="t-item"><div class="k">流动性</div><div class="v">${fmtUsd(Number(t.liquidity))}</div></div>
+          <div class="t-item"><div class="k">1h涨跌</div><div class="v ${pctClass(c1)}">${fmtPct(c1)}</div></div>
         </div>
       </div>`;
 
     // 讨论区（thesis）
-    html += `<div class="sec-title"><span class="bar"></span>💬 大家怎么说（${result.thesis.length}）</div>`;
+    html += `<div class="sec-title"><span class="bar"></span>💬 大家怎么说<span class="sec-count">${result.thesis.length}</span></div>`;
     if (result.thesis.length) {
       if (window.__fomoUser) result.thesis.forEach((it) => it.userId && window.__fomoUser.indexUser({
         id: it.userId, displayName: it.displayName, userHandle: it.userHandle,
@@ -149,23 +153,23 @@
         const upnl = Number(at.unrealizedPnlUsd || 0);
         const rpnl = Number(at.realizedPnlUsd || 0);
         if (c) trList.push({ key: "t" + ti, text: c });
+        const holdChip = at.humanTokenAmount
+          ? `<span class="d-hold-chip" title="作者当前持仓">📦 持仓 <b>${fmtAmount(at.humanTokenAmount)} ${esc(it.ticker || "")}</b>${at.usdValue ? `<em>${fmtUsd(at.usdValue)}</em>` : ""}</span>` : "";
+        const upnlChip = upnl !== 0 ? `<span class="d-pnl-chip ${pctClass(upnl)}">${upnl > 0 ? "▲" : "▼"} 浮盈 ${upnl > 0 ? "+" : ""}${fmtUsd(upnl)}</span>` : "";
+        const rpnlChip = rpnl !== 0 ? `<span class="d-pnl-chip ${pctClass(rpnl)}">${rpnl > 0 ? "▲" : "▼"} 已实现 ${rpnl > 0 ? "+" : ""}${fmtUsd(rpnl)}</span>` : "";
+        const thrChip = it.threshold > 0 ? `<span class="d-tag">🎯 门槛 ${fmtUsd(it.threshold)}</span>` : "";
         html += `
         <div class="discuss-card clickable-user" data-uid="${esc(it.userId)}" title="点击查看用户详情">
           <div class="d-top">
             ${it.profilePictureLink ? `<img src="${esc(it.profilePictureLink)}">` : `<div class="avatar">F</div>`}
-            <div>
+            <div class="d-id">
               <div class="d-name">${esc(it.displayName || "匿名")}${rankBadge(it.userId)}</div>
               <div class="d-handle">@${esc(it.userHandle || "")}</div>
             </div>
             <div class="d-time">${timeAgo(it.createdAt)}</div>
           </div>
           <div class="d-text" data-tr-key="t${ti}">${esc(c)}</div>
-          <div class="d-meta">
-            ${at.humanTokenAmount ? `<span class="d-hold">📦 当前持仓 <b>${fmtAmount(at.humanTokenAmount)} ${esc(it.ticker || "")}</b> ${at.usdValue ? fmtUsd(at.usdValue) : ""}</span>` : ""}
-            ${upnl !== 0 ? `<span class="${upnl > 0 ? "pnl-up" : "pnl-down"}">未实现盈亏 ${upnl > 0 ? "+" : ""}${fmtUsd(upnl)}</span>` : ""}
-            ${rpnl !== 0 ? `<span class="${rpnl > 0 ? "pnl-up" : "pnl-down"}">已实现 ${rpnl > 0 ? "+" : ""}${fmtUsd(rpnl)}</span>` : ""}
-            ${it.threshold > 0 ? `<span class="d-tag">门槛 ${fmtUsd(it.threshold)}</span>` : ""}
-          </div>
+          ${(holdChip || upnlChip || rpnlChip || thrChip) ? `<div class="d-meta">${holdChip}${upnlChip}${rpnlChip}${thrChip}</div>` : ""}
         </div>`;
       });
     } else {
@@ -174,25 +178,39 @@
 
     // 谁在买/持有
     const holders = (result.holders[0] && result.holders[0].topHolders) || [];
-    html += `<div class="sec-title"><span class="bar"></span>👥 Top 持有者（${holders.length}）${result.holders[0] ? ` · 总持有 ${fmtNum(result.holders[0].totalHolders, 0)} 人` : ""}</div>`;
+    html += `<div class="sec-title"><span class="bar"></span>👥 Top 持有者<span class="sec-count">${holders.length}</span>${result.holders[0] ? `<span class="sec-sub">总持有 ${fmtNum(result.holders[0].totalHolders, 0)} 人</span>` : ""}</div>`;
     if (holders.length) {
       if (window.__fomoUser) holders.forEach((h) => h.user && window.__fomoUser.indexUser(h.user));
+      // 持仓大小(优先市值, 兜底数量) → 按最大者归一化为横向对比条
+      const sizeOf = (h) => {
+        const v = Math.abs(Number(h.value) || 0);
+        return v > 0 ? v : Math.abs(Number(h.humanAmount) || 0);
+      };
+      const maxSize = Math.max(0, ...holders.map(sizeOf));
       html += holders.map((h, hi) => {
         if (hi === 0) console.log("[debug] first holder:", JSON.stringify(h));
         const u = h.user || {};
         const amt = h.humanAmount;
+        const val = Number(h.value) || 0;
+        const pnl = Number(h.pnl) || 0;
+        const barW = maxSize > 0 ? Math.max(5, (sizeOf(h) / maxSize) * 100) : 0;
+        const top = hi === 0 ? " top1" : hi === 1 ? " top2" : hi === 2 ? " top3" : "";
         return `
-        <div class="wallet-user clickable-user" data-uid="${esc(u.id)}" title="点击查看用户详情">
+        <div class="holder-card clickable-user${top}" data-uid="${esc(u.id)}" title="点击查看用户详情">
+          <div class="h-rank${top}">${hi + 1}</div>
           ${u.profilePictureLink ? `<img src="${esc(u.profilePictureLink)}">` : `<div class="avatar">F</div>`}
-          <div>
-            <div class="w-name">${esc(u.displayName || "未命名")}${rankBadge(u.id)}</div>
-            <div class="w-handle">@${esc(u.userHandle || "")}</div>
-            <div class="w-stats">
-              ${amt !== undefined ? `<span>📦 持仓 <b>${fmtAmount(amt)}</b> ${h.price ? fmtPrice(h.price) : ""}</span>` : ""}
-              ${h.value !== undefined ? `<span><b>${fmtUsd(h.value)}</b></span>` : ""}
-              ${h.pnl !== undefined && h.pnl !== 0 ? `<span class="${pctClass(h.pnl)}">${h.pnl > 0 ? "+" : ""}${fmtUsd(h.pnl)}</span>` : ""}
+          <div class="h-main">
+            <div class="h-top">
+              <div class="h-name">${esc(u.displayName || "未命名")}${rankBadge(u.id)}</div>
+              <div class="h-handle">@${esc(u.userHandle || "")}</div>
             </div>
+            <div class="h-bar" title="持仓规模（相对第 1 名）"><i style="width:${barW}%"></i></div>
             ${addrChip(u)}
+          </div>
+          <div class="h-right">
+            ${amt !== undefined ? `<div class="h-amt">${fmtAmount(amt)} 枚</div>` : ""}
+            ${val ? `<div class="h-val">≈ ${fmtUsd(val)}</div>` : ""}
+            ${pnl !== 0 ? `<div class="h-pnl ${pctClass(pnl)}">${pnl > 0 ? "+" : ""}${fmtUsd(pnl)}</div>` : ""}
           </div>
         </div>`;
       }).join("");
@@ -202,7 +220,7 @@
 
     // 单币动态
     if (result.feed.length) {
-      html += `<div class="sec-title"><span class="bar"></span>📈 最近动态（${result.feed.length}）</div>`;
+      html += `<div class="sec-title"><span class="bar"></span>📈 最近动态<span class="sec-count">${result.feed.length}</span></div>`;
       result.feed.slice(0, 8).forEach((f, fi) => {
         const c = f.comment && f.comment.comment || "";
         const bodyTxt = f.body && feedBodyText(f) || "";
@@ -230,7 +248,7 @@
     // 索引反查命中（地址曾在某用户的交易中出现）
     if (!hit && indexHit) {
       const u = indexHit.user;
-      const viaLabel = indexHit.via === "swap" ? "Swap 实际执行地址" : indexHit.via === "transfer" ? "链上转账地址" : indexHit.via === "trade" ? "交易账户地址" : "绑定钱包地址";
+      const viaLabel = indexHit.via === "swap" ? "Swap 实际执行地址" : indexHit.via === "transfer" ? "链上转账地址" : indexHit.via === "trade" ? "交易账户地址" : indexHit.via === "real" ? "地址库反查真实钱包" : "绑定钱包地址";
       const body = u ? `
         <div class="wallet-user clickable-user" data-uid="${esc(u.id)}" title="点击查看用户详情">
           ${u.profilePictureLink ? `<img src="${esc(u.profilePictureLink)}">` : `<div class="avatar">F</div>`}
@@ -358,11 +376,20 @@
         title.textContent = `用户：${esc(q)}`;
         content.innerHTML = renderUsers(users);
       } else {
-        // 关键词：当作代币短语搜索
-        const tokenRes = await searchToken(q);
-        if (tokenRes && tokenRes.token) {
-          title.textContent = `代币：${esc(tokenRes.token.token.symbol || "?")}`;
-          renderTokenResult(tokenRes, q);
+        // 关键词：代币短语 + 用户名模糊搜索 并行
+        // (官方 fuzzy-search 支持中文/displayName, 如搜"冷静"应命中 冷静冷静再冷静)
+        const [tokenRes, users] = await Promise.allSettled([
+          searchToken(q).catch(() => null),
+          searchHandle(q).catch(() => []),
+        ]);
+        const tRes = tokenRes.status === "fulfilled" ? tokenRes.value : null;
+        const us = users.status === "fulfilled" ? users.value : [];
+        if (tRes && tRes.token) {
+          title.textContent = `代币：${esc(tRes.token.token.symbol || "?")}`;
+          renderTokenResult(tRes, q);
+        } else if (us.length) {
+          title.textContent = `用户：${esc(q)}`;
+          content.innerHTML = renderUsers(us);
         } else {
           content.innerHTML = `<div class="no-result">没有找到匹配的代币或用户，请确认输入内容。</div>`;
         }

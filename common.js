@@ -380,6 +380,16 @@ async function collectRealWallets() {
     }
   } catch (_e) {}
 
+  // 反查自动收录的真实地址（fomoLookupHits，uid→记录）——视为地址库的一部分
+  try {
+    const s = await chrome.storage.local.get("fomoLookupHits");
+    const map = s.fomoLookupHits || {};
+    for (const [uid, h] of Object.entries(map)) {
+      if (h && h.evm) put({ address: h.evm, type: "evm", chain: "EVM", uid, handle: h.handle, displayName: h.displayName, note: h.note || "反查收录", source: "db" });
+      if (h && h.sol) put({ address: h.sol, type: "sol", chain: "Solana", uid, handle: h.handle, displayName: h.displayName, note: h.note || "反查收录", source: "db" });
+    }
+  } catch (_e) {}
+
   const list = Array.from(rows.values());
   list.sort((a, b) => (a.type === b.type ? String(a.address).localeCompare(b.address) : a.type === "evm" ? -1 : 1));
   return list;

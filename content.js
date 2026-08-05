@@ -29,13 +29,35 @@
     }).catch(() => {});
   } catch (_e) {}
 
-  // 地址 → 标签(本地收录 > 预置库; 都不在的一律不标, 避免噪声)
+  // 反查自动收录的真实地址(fomoLookupHits, 与预置库同等"真实钱包"待遇)
+  let lookupByAddr = {};
+  try {
+    chrome.storage.local.get("fomoLookupHits").then((s) => {
+      const map = s.fomoLookupHits || {};
+      for (const h of Object.values(map)) {
+        if (h && h.evm) lookupByAddr[String(h.evm).toLowerCase()] = { kind: "real_evm", handle: h.handle, displayName: h.displayName };
+        if (h && h.sol) lookupByAddr[String(h.sol).toLowerCase()] = { kind: "real_sol", handle: h.handle, displayName: h.displayName };
+      }
+    }).catch(() => {});
+  } catch (_e) {}
+
+  // 地址 → 标签(本地收录 > 反查收录 > 预置库; 都不在的一律不标, 避免噪声)
   function labelFor(addr) {
     const key = addr.toLowerCase();
     const mine = myLib.find((x) => String(x.addr).toLowerCase() === key);
     if (mine) {
       stat.mine++;
       return { cls: "ftag-mine", text: "📌 " + (mine.label || "已收录"), title: mine.note || "本地收录地址" };
+    }
+    const lh = lookupByAddr[key];
+    if (lh) {
+      stat.tagged++;
+      const name = lh.handle || lh.displayName || "FOMO用户";
+      return {
+        cls: "ftag-real",
+        text: "FOMO·" + name,
+        title: "反查收录真实钱包(" + (lh.kind === "real_evm" ? "EVM" : "Solana") + "), 用户: " + name,
+      };
     }
     const m = DB.addrMap[key];
     if (!m) return null;

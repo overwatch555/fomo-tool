@@ -103,8 +103,56 @@
       });
     }
   }
-  // 页面加载后尽早预置（同步,幂等）
+  // 页面加载后尽早预置(同步,幂等)
   seedDb();
+
+  /* ============ 反查结果自动收录(地址库增量) ============
+   * 一键反查出的真实地址, 自动持久化到 chrome.storage.local(fomoLookupHits, uid→记录),
+   * 并立即并入 __userCache / __addrIndex(与预置库同等 real 优先级):
+   *   - 钱包地址搜索、用户详情、导出、GMGN 打标 马上生效
+   *   - 无需手工改 address_db.js(由 build_db.js 生成,勿手改)
+   */
+  const lookupHitsKey = "fomoLookupHits";
+  let lookupHits = new Map(); // uid -> { displayName, handle, evm, evmChainId, sol, ts }
+
+  function applyLookupHit(uid, h) {
+    if (!uid || !h) return;
+    lookupHits.set(uid, h);
+    const prev = window.__userCache.get(uid) || {};
+    const merged = {
+      ...prev,
+      id: prev.id || uid,
+      displayName: h.displayName || prev.displayName || "",
+      userHandle: h.handle || prev.userHandle || "",
+      _seed: true, // 标记为库数据, 防止运行时对象覆盖真实钱包
+      _evmReal: h.evm || prev._evmReal || null,
+      _solReal: h.sol || prev._solReal || null,
+    };
+    window.__userCache.set(uid, merged);
+    const info = { uid, displayName: h.displayName || prev.displayName || "", userHandle: h.handle || prev.userHandle || "" };
+    if (h.evm) setAddrInfo(String(h.evm).toLowerCase(), { ...info, via: "real", addr: h.evm, networkId: h.evmChainId || 8453 });
+    if (h.sol) setAddrInfo(String(h.sol).toLowerCase(), { ...info, via: "real", addr: h.sol, networkId: 1399811149 });
+  }
+
+  async function saveLookupHit(uid, h) {
+    applyLookupHit(uid, h);
+    try {
+      const s = await chrome.storage.local.get(lookupHitsKey);
+      const map = s[lookupHitsKey] || {};
+      map[uid] = { ...(map[uid] || {}), ...h, ts: Date.now() };
+      await chrome.storage.local.set({ [lookupHitsKey]: map });
+      return true;
+    } catch (_e) { return false; }
+  }
+
+  async function seedLookupHits() {
+    try {
+      const s = await chrome.storage.local.get(lookupHitsKey);
+      const map = s[lookupHitsKey] || {};
+      for (const [uid, h] of Object.entries(map)) applyLookupHit(uid, h);
+    } catch (_e) {}
+  }
+  seedLookupHits();
 
   function indexTradeAddrs(tradeId, trade, swaps, transfers, uidFallback) {
     const uid = trade.userId || uidFallback;
@@ -210,7 +258,10 @@
   /* 地址库状态（标题旁小字,一眼确认库是否加载成功） */
   function dbState() {
     const db = window.__FOMO_DB;
-    if (db && Array.isArray(db.users)) return ` <span style="font-size:10px;color:var(--muted);font-weight:400">库 ${db.users.length} 人</span>`;
+    if (db && Array.isArray(db.users)) {
+      const extra = lookupHits.size ? ` + ${lookupHits.size} 反查` : "";
+      return ` <span style="font-size:10px;color:var(--muted);font-weight:400">库 ${db.users.length} 人${extra}</span>`;
+    }
     return ` <span style="font-size:10px;color:#f87171;font-weight:400">地址库未加载</span>`;
   }
 
@@ -325,9 +376,31 @@
     return html;
   }
 
+  /* 持仓列表（含每笔盈亏 + 汇总盈亏条） */
   function holdingsHTML(holdings) {
     if (!holdings || !holdings.length) return `<div class="ud-empty">暂无持仓数据</div>`;
-    return holdings.map((h) => `
+    let sumVal = 0, sumPnl = 0, hasVal = false, hasPnl = false;
+    const rows = holdings.map((h) => {
+      const val = Number(h.value);
+      const pnl = Number(h.pnl);
+      if (isFinite(val) && val > 0) { sumVal += val; hasVal = true; }
+      if (isFinite(pnl) && pnl !== 0) { sumPnl += pnl; hasPnl = true; }
+      // 盈亏百分比：优先接口字段，否则按 成本≈市值-盈亏 推算
+      let pnlPct = h.pnlPct;
+      if (pnlPct == null && isFinite(val) && isFinite(pnl) && val - pnl > 0) {
+        pnlPct = (pnl / (val - pnl)) * 100;
+      }
+      const pnlTxt = isFinite(pnl) && pnl !== 0
+        ? `<div class="ud-h-pnl ${pctClass(pnl)}">${pnl > 0 ? "▲" : "▼"} ${pnl > 0 ? "+" : ""}${fmtUsd(pnl)}${pnlPct != null ? ` (${pnl > 0 ? "+" : ""}${fmtPct(pnlPct / 100)})` : ""}</div>`
+        : "";
+      return { h, pnlTxt };
+    });
+    const sumRow = (hasVal || hasPnl) ? `
+      <div class="ud-hold-sum">
+        <span>总市值 ${hasVal ? fmtUsd(sumVal) : "-"}</span>
+        ${hasPnl ? `<span class="${pctClass(sumPnl)}">总盈亏 ${sumPnl > 0 ? "+" : ""}${fmtUsd(sumPnl)}</span>` : ""}
+      </div>` : "";
+    return sumRow + rows.map(({ h, pnlTxt }) => `
       <div class="ud-holding">
         <img src="${esc(h.imageUrl || "")}">
         <div class="ud-h-main">
@@ -336,7 +409,7 @@
         </div>
         <div class="ud-h-right">
           <div class="ud-h-val">${h.value != null ? fmtUsd(h.value) : "-"}</div>
-          ${h.pnl != null ? `<div class="ud-h-pnl ${pctClass(h.pnl)}">${h.pnl > 0 ? "+" : ""}${fmtUsd(h.pnl)}</div>` : ""}
+          ${pnlTxt}
         </div>
       </div>`).join("");
   }
@@ -436,8 +509,9 @@
       tokenAddress: bal.tokenAddress || (x && x.tokenAddress),
       networkId: nid,
       humanAmount: shifted ?? (x && (x.humanAmount ?? x.amount)),
-      value: bal.value ?? bal.valueUsd ?? (price != null && shifted != null ? price * shifted : undefined) ?? (x && (x.usdValue ?? x.value)),
-      pnl: bal.pnl ?? (x && x.pnl),
+      value: bal.value ?? bal.valueUsd ?? bal.usdValue ?? (price != null && shifted != null ? price * shifted : undefined) ?? (x && (x.usdValue ?? x.value)),
+      pnl: bal.pnl ?? bal.unrealizedPnl ?? bal.unrealizedPnlUsd ?? bal.profitLossUsd ?? bal.profitLoss ?? (x && (x.pnl ?? x.unrealizedPnlUsd ?? x.profitLossUsd)),
+      pnlPct: bal.pnlPct ?? bal.pnlPercent ?? bal.unrealizedPnlPct ?? (x && (x.pnlPct ?? x.pnlPercent)),
       price,
     };
   }
@@ -493,7 +567,7 @@
         </div>
       </div>
       <div class="ud-sec"><div class="ud-sec-title">数据总览</div>${statsHTML(u)}</div>
-      <div class="ud-sec"><div class="ud-sec-title">持仓代币</div><div id="udHoldings"><div class="loading" style="padding:10px">加载中…</div></div></div>
+      <div class="ud-sec"><div class="ud-sec-title">持仓代币</div><div id="udHoldings" class="ud-holdings"><div class="loading" style="padding:10px">加载中…</div></div></div>
       <div class="ud-sec"><div class="ud-sec-title">交易记录</div><div id="udTrades"><div class="loading" style="padding:10px">加载中…</div></div></div>
       <div class="ud-sec"><div class="ud-sec-title">链上活动地址</div><div id="udOnchain"><div class="ud-empty">展开下方交易记录后，实际链上执行地址会出现在这里</div></div></div>
     `;
@@ -555,7 +629,39 @@
           });
           progressEl.style.display = "none";
           resEl.style.display = "block";
-          let resHTML = "";
+          // 反查命中 → 自动收录到地址库(本地持久化 + 内存索引即时生效)
+          let savedHits = 0;
+          if (res.evm && res.evm.address) {
+            const ok = await saveLookupHit(uid, {
+              displayName: u.displayName || u.userHandle || "",
+              handle: u.userHandle || "",
+              evm: res.evm.address,
+              evmChainId: res.mainEvmChain,
+            });
+            if (ok) savedHits++;
+          }
+          if (res.sol && res.sol.address) {
+            const ok = await saveLookupHit(uid, {
+              displayName: u.displayName || u.userHandle || "",
+              handle: u.userHandle || "",
+              sol: res.sol.address,
+            });
+            if (ok) savedHits++;
+          }
+          let resHTML = savedHits
+            ? `<div class="lookup-saved">✅ 已自动收录 ${savedHits} 个真实地址到地址库（本地持久化，地址搜索 / 用户详情 / 导出 / GMGN 打标立即生效）</div>`
+            : "";
+          // 立即刷新"钱包地址"区, 展示刚收录进库的真实地址
+          if (savedHits) {
+            const cachedU = window.__userCache.get(uid) || u;
+            const addrsBox = b.querySelector(".ud-addrs");
+            if (addrsBox) {
+              addrsBox.innerHTML = addrsHTML(cachedU, []);
+              annotateAddrs(addrsBox);
+            }
+            const dbTxt = b.querySelector(".ud-dbstate");
+            if (dbTxt) dbTxt.innerHTML = dbState();
+          }
           if (!res.hasSwaps) {
             resHTML = `<div class="lookup-empty">该用户在链上暂无 Swap 交易记录，无法反查。</div>`;
           } else {
@@ -616,17 +722,16 @@
       });
     }
 
-    // 持仓：topHoldings 立即渲染；同时拉 balances 兜底
+    // 持仓：topHoldings 立即渲染(快)；balances 接口含盈亏数据，返回后总是覆盖(更全)
     if (u.topHoldings && u.topHoldings.length) {
       b.querySelector("#udHoldings").innerHTML = holdingsHTML(u.topHoldings.map(normalizeHolding));
-    } else {
-      loadBalances(uid).then((bl) => {
-        const el = b.querySelector("#udHoldings");
-        if (!el) return;
-        if (bl && bl.length) el.innerHTML = holdingsHTML(bl.map(normalizeHolding));
-        else if (!u.topHoldings || !u.topHoldings.length) el.innerHTML = `<div class="ud-empty">暂无持仓数据</div>`;
-      });
     }
+    loadBalances(uid).then((bl) => {
+      const el = b.querySelector("#udHoldings");
+      if (!el) return;
+      if (bl && bl.length) el.innerHTML = holdingsHTML(bl.map(normalizeHolding));
+      else if (!u.topHoldings || !u.topHoldings.length) el.innerHTML = `<div class="ud-empty">暂无持仓数据</div>`;
+    });
 
     // 交易记录
     loadTrades(uid, (list, err) => {
