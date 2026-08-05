@@ -438,7 +438,82 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     chrome.storage.local.get("jwt").then((s) => { lastJwt = s.jwt || null; });
     // WS 若因 SW 休眠断开则重连
     if (!wsConnected) wsConnect();
+    // TG 中继若断开则重连
+    if (!tgWs || tgWs.readyState !== WebSocket.OPEN) tgWsConnect();
     // Top 榜买入推送 + 排行映射
     pollTick();
   }
 });
+
+/* ========== TG 群消息接收（中继 ws://43.155.204.242:8765） ========== */
+const TG_WS_URL = "ws://43.155.204.242:8765";
+const TG_HISTORY_MAX = 100;
+let tgWs = null;
+let tgRetryMs = 1000;
+const tgPushedKeys = new Set(); // 通知去重（内存级，SW 重启清空可接受）
+
+function tgNotifyState(on) {
+  chrome.storage.session.set({ tgWsConnected: on, tgWsTs: Date.now() }).catch(() => {});
+}
+
+async function tgHandleMessage(msg) {
+  if (!msg || !msg.msg_id) return;
+  // 1. 存历史（供 popup / dashboard 展示）
+  try {
+    const { tgHistory = [] } = await chrome.storage.local.get("tgHistory");
+    tgHistory.unshift(msg);
+    if (tgHistory.length > TG_HISTORY_MAX) tgHistory.length = TG_HISTORY_MAX;
+    await chrome.storage.local.set({ tgHistory });
+  } catch (_e) {}
+
+  // 2. 桌面通知（按 msg_id 去重）
+  const key = String(msg.msg_id);
+  if (tgPushedKeys.has(key)) return;
+  tgPushedKeys.add(key);
+  const typeLabel = { text: "文本", photo: "图片", video: "视频", document: "文件", sticker: "贴纸", animation: "GIF", service: "系统", other: "其他" };
+  const label = typeLabel[msg.type] || msg.type;
+  let body = msg.text || "(无文本)";
+  if (msg.links && msg.links.length) body += "\n🔗 " + msg.links[0] + (msg.links.length > 1 ? ` (+${msg.links.length - 1})` : "");
+  if (msg.media && msg.media.url) body += "\n📎 " + msg.media.url;
+  try {
+    await chrome.notifications.create("tg-" + key, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: `TG ${msg.sender.name || msg.sender.username || "群"} [${label}]`,
+      message: String(body).slice(0, 250),
+      priority: 2,
+    });
+  } catch (_e) {}
+
+  // 3. 广播给打开着的 dashboard / popup
+  chrome.runtime.sendMessage({ action: "tgMessage", msg }).catch(() => {});
+}
+
+function tgWsConnect() {
+  let socket;
+  try { socket = new WebSocket(TG_WS_URL); } catch (_e) { setTimeout(tgWsConnect, 5000); return; }
+  tgWs = socket;
+  socket.onopen = () => { tgRetryMs = 1000; tgNotifyState(true); };
+  socket.onmessage = (ev) => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch { return; }
+    tgHandleMessage(m);
+  };
+  socket.onclose = () => {
+    tgNotifyState(false);
+    setTimeout(tgWsConnect, tgRetryMs);
+    tgRetryMs = Math.min(tgRetryMs * 2, 15000);
+  };
+  socket.onerror = () => {};
+}
+
+/* TG 通知点击 → 打开完整看板 */
+chrome.notifications.onClicked.addListener((id) => {
+  if (id.startsWith("tg-")) {
+    chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
+    chrome.notifications.clear(id);
+  }
+});
+
+/* 启动 TG 中继连接 */
+tgWsConnect();
