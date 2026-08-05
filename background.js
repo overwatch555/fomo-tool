@@ -115,7 +115,7 @@ let lbBackoffMs = 60000; // 退避时长（指数增长到 5 分钟）
 const pushedTradeKeys = new Set(); // 本次运行去重
 const lastPushByUser = new Map(); // uid -> 时间戳（同用户限频 5 分钟）
 const PUSH_MAX = 30; // 默认推送 Top 30
-const PUSH_MIN_USD = 100; // 扩展规则：任何人买入金额阈值(默认 $100)
+const PUSH_MIN_USD = 200; // 扩展规则：任何代币单笔买入金额阈值(默认 $200)
 const PUSH_THESIS_MIN_FOLLOWERS = 1000; // 扩展规则：发观点用户的最低粉丝数
 
 const followersByUid = new Map(); // uid -> 粉丝数（排行榜/用户详情/条目自带 汇聚缓存）
@@ -202,7 +202,8 @@ function shouldPush(sig, topN, minUsd) {
   if (!topHit && !byAmount) return null;
   const now = Date.now();
   const last = lastPushByUser.get(uid) || 0;
-  if (now - last < 5 * 60 * 1000) return null; // 同用户 5 分钟限频
+  // 金额规则命中（单笔 ≥ minUsd）不受限频：每笔都必须推；仅 Top 榜规则限频防刷屏
+  if (!byAmount && now - last < 5 * 60 * 1000) return null;
   return { uid, rank: topHit ? rank : 0, byAmount, usdAmount };
 }
 
@@ -214,10 +215,10 @@ async function pushTopBuy(sig, info) {
     [uid, sig.tokenAddress || (sig.token && sig.token.address) || "", sig.usdAmount || "", sig.createdAt || ""].join("|");
   if (!key) return;
   if (pushedTradeKeys.has(key)) return;
-  // 同用户 5 分钟限频（双保险：shouldPush 也查，这里兜底防绕过）
+  // 同用户 5 分钟限频（双保险：金额规则命中不受限频，仅 Top 榜规则兜底防绕过）
   const now = Date.now();
   const last = lastPushByUser.get(uid) || 0;
-  if (now - last < 5 * 60 * 1000) return;
+  if (!(info && info.byAmount) && now - last < 5 * 60 * 1000) return;
   // 跨生命周期去重（storage 持久化）
   try {
     const stored = await chrome.storage.local.get("fomoPushedTrades");
@@ -277,7 +278,7 @@ async function taFetch(forceRefresh = false) {
   if (taInFlight) return taInFlight;                           // 单飞：等待在途请求
   taInFlight = (async () => {
     try {
-      const r = await call("/feed/tradingActivity", { params: { limit: 100 } });
+      const r = await call("/feed/tradingActivity", { params: { limit: 500 } });
       if (r.ok && r.status === 200) {
         const ro = r.data.responseObject || r.data || {};
         taCache = { items: ro.items || [], ts: Date.now() };
@@ -646,100 +647,3 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-/* ========== TG 群消息接收（中继 ws://43.155.204.242:8765） ========== */
-const TG_WS_URL = "ws://43.155.204.242:8765";
-const TG_HISTORY_MAX = 100;
-let tgWs = null;
-let tgRetryMs = 1000;
-const tgPushedKeys = new Set(); // 通知去重（内存级，SW 重启清空可接受）
-
-function tgNotifyState(on) {
-  chrome.storage.session.set({ tgWsConnected: on, tgWsTs: Date.now() }).catch(() => {});
-}
-
-async function tgHandleMessage(msg) {
-  if (!msg) return;
-  if (!msg.msg_id) {
-    // 中继若改用其他消息结构（如 {type,data} 包装），这里打日志便于识别
-    console.warn("[TG] 收到未知格式消息:", JSON.stringify(msg).slice(0, 300));
-    return;
-  }
-  // 1. 存历史（供 popup / dashboard 展示）
-  try {
-    const { tgHistory = [] } = await chrome.storage.local.get("tgHistory");
-    tgHistory.unshift(msg);
-    if (tgHistory.length > TG_HISTORY_MAX) tgHistory.length = TG_HISTORY_MAX;
-    await chrome.storage.local.set({ tgHistory });
-  } catch (_e) {}
-
-  // 2. 桌面通知（按 msg_id 去重）
-  const key = String(msg.msg_id);
-  if (tgPushedKeys.has(key)) return;
-  tgPushedKeys.add(key);
-  const typeLabel = { text: "文本", photo: "图片", video: "视频", document: "文件", sticker: "贴纸", animation: "GIF", service: "系统", other: "其他" };
-  const label = typeLabel[msg.type] || msg.type;
-  let body = msg.text || "(无文本)";
-  if (msg.links && msg.links.length) body += "\n🔗 " + msg.links[0] + (msg.links.length > 1 ? ` (+${msg.links.length - 1})` : "");
-  if (msg.media && msg.media.url) body += "\n📎 " + msg.media.url;
-  try {
-    await chrome.notifications.create("tg-" + key, {
-      type: "basic",
-      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
-      title: `TG ${msg.sender.name || msg.sender.username || "群"} [${label}]`,
-      message: String(body).slice(0, 250),
-      priority: 2,
-    });
-  } catch (_e) {}
-
-  // 3. 广播给打开着的 dashboard / popup
-  chrome.runtime.sendMessage({ action: "tgMessage", msg }).catch(() => {});
-}
-
-function tgWsConnect() {
-  let socket;
-  try { socket = new WebSocket(TG_WS_URL); } catch (e) {
-    // 常见原因：manifest 缺少 ws:// 的 host 权限 → 构造 WebSocket 直接抛 SecurityError
-    console.error("[TG] WebSocket 创建失败:", e);
-    chrome.storage.session.set({ tgWsError: String((e && e.message) || e), tgWsTs: Date.now() }).catch(() => {});
-    setTimeout(tgWsConnect, 5000);
-    return;
-  }
-  tgWs = socket;
-  socket.onopen = () => {
-    tgRetryMs = 1000;
-    tgNotifyState(true);
-    console.log("[TG] 已连接", TG_WS_URL);
-    chrome.storage.session.set({ tgWsError: "" }).catch(() => {});
-  };
-  socket.onmessage = (ev) => {
-    let m;
-    try { m = JSON.parse(ev.data); } catch {
-      console.warn("[TG] 收到非 JSON 消息:", String(ev.data).slice(0, 200));
-      return;
-    }
-    tgHandleMessage(m);
-  };
-  socket.onclose = (ev) => {
-    tgNotifyState(false);
-    console.warn("[TG] 连接关闭 code=" + ev.code + (ev.reason ? " reason=" + ev.reason : ""));
-    chrome.storage.session.set({ tgWsError: "连接关闭 code=" + ev.code + " " + (ev.reason || "") }).catch(() => {});
-    setTimeout(tgWsConnect, tgRetryMs);
-    tgRetryMs = Math.min(tgRetryMs * 2, 15000);
-  };
-  socket.onerror = () => {
-    // 无 event 详情，onclose 随后触发；这里落盘便于排查（服务器未启动/端口不通/防火墙等）
-    console.error("[TG] 连接错误（服务器未启动 / 端口不通 / 防火墙拦截？）");
-    chrome.storage.session.set({ tgWsError: "连接错误：中继服务器不可达（请确认 43.155.204.242:8765 已启动且放行端口）" }).catch(() => {});
-  };
-}
-
-/* TG 通知点击 → 打开完整看板 */
-chrome.notifications.onClicked.addListener((id) => {
-  if (id.startsWith("tg-")) {
-    chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
-    chrome.notifications.clear(id);
-  }
-});
-
-/* 启动 TG 中继连接 */
-tgWsConnect();

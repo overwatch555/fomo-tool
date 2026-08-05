@@ -9,10 +9,10 @@
   let latestSignals = [];
   let latestFeed = [];
   let latestThesis = []; // feed 观点条目（thesis_created/manual），合并进跟单信号
-  let latestTg = []; // TG 中继消息，合并进跟单信号
   let currentSigFilter = "all";
   let currentFeedFilter = "all";
   let topSignalThreshold = 30;
+  let pushMinUsdThreshold = 200; // 任何代币单笔金额阈值（与设置联动，默认 $200）
   const AUTO_MS = 15000; // 排行榜/信号/Feed 轮询间隔（热门币走 WS 实时）
 
   /* ---------- 会话状态 ---------- */
@@ -134,7 +134,6 @@
 
   function signalAction(s) {
     const type = String(s.type || s.feedType || "").toLowerCase();
-    if (s._isTg) return { label: s._tgLabel || "TG 消息", cls: "new" };
     if (/thesis|manual/.test(type)) return { label: "💡 观点", cls: "new" };
     if (type.includes("buy")) return { label: "买入", cls: "buy" };
     if (type.includes("sell") || type.includes("close")) return { label: "卖出", cls: "sell" };
@@ -177,53 +176,37 @@
     };
   }
 
-  /* TG 中继消息 → 信号行对象（复用同一行模板） */
-  const TG_TYPE_LABEL = { text: "文本", photo: "图片", video: "视频", document: "文件", sticker: "贴纸", animation: "GIF", service: "系统", other: "其他" };
-  // 从 TG 文本/链接里提取代币地址（EVM CA 或主流追踪站的 Solana 地址）
-  function tgExtractTokenAddr(text, links) {
-    const all = [text || "", ...(links || [])].join(" ");
-    const evm = all.match(/0x[a-fA-F0-9]{40}\b/);
-    if (evm) return evm[0];
-    const sol = all.match(/(?:dexscreener\.com\/solana|gmgn\.ai\/sol\/address|birdeye\.so\/token|pump\.fun\/coin|solscan\.io\/token)\/([A-Za-z0-9]{32,44})/);
-    if (sol) return sol[1];
-    return "";
-  }
-  function tgToSignal(m) {
-    if (!m || !m.msg_id) return null;
-    const text = String(m.text || "");
-    const links = Array.isArray(m.links) ? m.links : [];
-    // 纯系统/无内容消息不展示（避免空白行）
-    if (!text && !links.length && !m.media) return null;
-    const sender = m.sender || {};
-    const label = TG_TYPE_LABEL[m.type] || m.type || "消息";
-    const addr = tgExtractTokenAddr(text, links);
-    const ts = Number(m.date || m.ts || m.timestamp);
+  /* tradingActivity 买入条目（swap_buy，单笔 ≥$200）→ 交易动态(feed)条目，
+   * 让"任何代币单笔 ≥$200 的买入"也出现在【交易动态】tab（feed 接口本身不含 swap_buy） */
+  function taToFeed(s) {
+    if (!s) return null;
+    const b = s.body && typeof s.body === "object" ? s.body : {};
+    const usd = Number(s.usdAmount || b.amountInUsd || 0);
+    if (!(usd >= pushMinUsdThreshold)) return null;
+    const tt = (Array.isArray(b.topTraders) && b.topTraders[0]) || {};
+    const uid = s.userId || tt.id;
+    const type = String(s.type || s.feedType || b.feedType || "swap_buy").toLowerCase();
+    if (!/buy/.test(type)) return null;
+    const tok = b.token || {};
+    const tokenAddr = s.tokenAddress || b.tokenAddress || tok.address || "";
     return {
-      _isTg: true,
-      id: "tg-" + m.msg_id,
-      type: "tg",
-      userId: null,
-      displayName: sender.name || sender.username || "TG 群",
-      userHandle: sender.username || "",
-      profilePictureLink: "",
-      networkId: null,
-      _tgLabel: "TG [" + label + "]",
-      tokenAddress: addr,
-      token: { address: addr, symbol: "", name: "", imageUrl: "", networkId: null },
-      comment: text ? { comment: text } : null,
-      links,
-      media: m.media || null,
-      // 兼容 unix 秒 / ISO 字符串 / 毫秒时间戳
-      createdAt: isFinite(ts) && ts ? (ts < 1e12 ? ts * 1000 : ts) : Date.now(),
-      usdAmount: null,
-      price: null,
+      _fromTa: true,
+      feedType: "swap_buy",
+      type: "swap_buy",
+      userId: uid,
+      displayName: s.displayName || tt.displayName || "",
+      userHandle: s.userHandle || tt.userHandle || "",
+      profilePictureLink: s.profilePictureLink || tt.userImageUrl || "",
+      createdAt: s.createdAt,
+      body: {
+        tokenSymbol: s.ticker || b.tokenSymbol || tok.symbol || "",
+        tokenAddress: tokenAddr,
+        networkId: s.networkId || b.networkId || tok.networkId,
+        amountInUsd: usd,
+        price: s.price != null ? s.price : b.price,
+        message: `单笔买入 ${fmtUsd(usd)}${s.ticker ? " · " + s.ticker : ""}`,
+      },
     };
-  }
-  function shortUrl(u) {
-    try {
-      const x = new URL(u);
-      return x.hostname.replace(/^www\./, "") + (x.pathname.length > 22 ? x.pathname.slice(0, 22) + "…" : x.pathname);
-    } catch (_e) { return String(u).slice(0, 40); }
   }
 
   function signalToken(s) {
@@ -263,12 +246,11 @@
     tb.innerHTML = "";
     const usersById = new Map(latestLeaderboard.map((u) => [u.id, u]));
 
-    // TG 中继消息 + 观点条目（thesis/manual）转换为信号行，合并到列表最前面
-    const tgRows = (latestTg || []).map(tgToSignal).filter(Boolean);
+    // 观点条目（thesis/manual）转换为信号行，合并到列表最前面
     const thesisRows = (latestThesis || [])
       .map(thesisToSignal)
       .filter(Boolean);
-    const all = [...tgRows, ...thesisRows, ...(list || [])];
+    const all = [...thesisRows, ...(list || [])];
 
     // 过滤逻辑: all / top / top_buy（观点行无排行榜名次 → 自动被 top 过滤排除）
     const rows = all.filter((s) => {
@@ -283,6 +265,18 @@
       return true; // "all"
     });
 
+    // 用户要求：任何代币单笔 ≥$200 的买入必须展示在跟单信号里 → 置顶
+    // 观点行保持在最前，其余按 金额规则 优先（Array.sort 稳定，同组内保持原顺序）
+    const thesisPart = rows.filter((s) => s._isThesis);
+    const tradePart = rows
+      .filter((s) => !s._isThesis)
+      .sort(
+        (a, b) =>
+          (Number(b.usdAmount || 0) >= pushMinUsdThreshold ? 1 : 0) -
+          (Number(a.usdAmount || 0) >= pushMinUsdThreshold ? 1 : 0)
+      );
+    rows.splice(0, rows.length, ...thesisPart, ...tradePart);
+
     const topBuyCount = (all || []).filter((s) => {
       const tt = (s.body && Array.isArray(s.body.topTraders) && s.body.topTraders[0]) || {};
       const u = usersById.get(s.userId || tt.id);
@@ -294,7 +288,7 @@
     if (countBadge) countBadge.textContent = `${rows.length} 条`;
 
     const meta = $("#sigMeta");
-    if (meta) meta.textContent = `近 100 条信号 · Top ${topSignalThreshold} 榜单买入 ${topBuyCount} 条 · 观点 ${thesisRows.length} 条 · TG ${tgRows.length} 条（已合并推送提醒）`;
+    if (meta) meta.textContent = `近 500 条信号 · Top ${topSignalThreshold} 榜单买入 ${topBuyCount} 条 · 观点 ${thesisRows.length} 条（已合并推送提醒）`;
 
     if (!rows.length) {
       tb.innerHTML = `<tr><td colspan="6" class="empty">${currentSigFilter === "all" ? "暂无跟单信号" : "暂无符合条件的 Top 50 信号"}</td></tr>`;
@@ -302,7 +296,7 @@
     }
 
     const jobs = []; // 异步翻译任务
-    rows.slice(0, 50).forEach((s, i) => {
+    rows.slice(0, 200).forEach((s, i) => {
       const tr = document.createElement("tr");
       // tradingActivity 的用户在嵌套 body.topTraders[]（顶层 userId 常为 null）→ 去匿名
       const tt = (s.body && Array.isArray(s.body.topTraders) && s.body.topTraders[0]) || {};
@@ -343,7 +337,6 @@
           ${topAlert}
         </td>
         <td>
-          ${s._isTg && !token.address ? `<span class="muted">无代币信息</span>` : `
           <div class="token-cell">
             ${tokImg}
             <div>
@@ -355,13 +348,12 @@
                   <button class="copy-btn" data-copy="${esc(token.address)}" title="点击复制代币地址 (CA)">📋</button>
                 </div>` : ""}
             </div>
-          </div>`}
+          </div>
         </td>
-        <td>${s._isTg ? '<span class="muted">📱 TG 消息</span>' : s._isThesis ? '<span class="muted">💡 观点帖</span>' : holdingsSummary(leaderboardUser, s)}</td>
+        <td>${s._isThesis ? '<span class="muted">💡 观点帖</span>' : holdingsSummary(leaderboardUser, s)}</td>
         <td>
           <div class="signal-detail">
             ${comment ? `<div class="comment" data-tr-key="sig${i}" title="${esc(comment)}">${esc(comment)}</div>` : ""}
-            ${s._isTg && s.links && s.links.length ? `<div class="tg-link">🔗 <a href="${esc(s.links[0])}" target="_blank" rel="noopener" title="${esc(s.links[0])}">${esc(shortUrl(s.links[0]))}</a>${s.links.length > 1 ? ` <span class="muted">+${s.links.length - 1}</span>` : ""}</div>` : ""}
             ${s.usdAmount ? `<span class="signal-value ${action.cls === "buy" ? "up" : action.cls === "sell" ? "down" : ""}">${fmtUsd(s.usdAmount)}</span>` : ""}
             ${s.price ? `<span class="signal-price">@${fmtPrice(s.price)}</span>` : ""}
           </div>
@@ -459,7 +451,7 @@
 
     const jobs = []; // 异步翻译任务
 
-    filtered.slice(0, 50).forEach((f, i) => {
+    filtered.slice(0, 200).forEach((f, i) => {
       const item = document.createElement("article");
       const body = typeof f.body === "object" && f.body ? f.body : {};
       const rawType = f.feedType || body.feedType || f.type || "";
@@ -622,6 +614,9 @@
           },
         });
         latestFeed = (feed.responseObject && feed.responseObject.feed) || [];
+        // 合并 tradingActivity 中"单笔 ≥$200 的买入"进交易动态（feed 接口本身不含 swap_buy）
+        const bigBuyRows = (sigList || []).map(taToFeed).filter(Boolean);
+        latestFeed = [...bigBuyRows, ...latestFeed];
         renderFeed(latestFeed);
       } catch (_) {
         latestFeed = [];
@@ -633,13 +628,6 @@
         latestThesis = (tr && tr.ok && Array.isArray(tr.items)) ? tr.items : [];
       } catch (_e) {
         latestThesis = [];
-      }
-      // TG 中继消息 → 合并进跟单信号列表（后台已持久化到 tgHistory）
-      try {
-        const s = await chrome.storage.local.get("tgHistory");
-        latestTg = Array.isArray(s.tgHistory) ? s.tgHistory : [];
-      } catch (_e) {
-        latestTg = [];
       }
       renderSignals(latestSignals);
     } catch (e) {
@@ -810,7 +798,10 @@
     if (pushToggle) pushToggle.checked = c.pushEnabled !== false;
     topSignalThreshold = c.pushTopN || 30;
     if (pushTopN) pushTopN.value = topSignalThreshold;
-    if (pushMinUsd) pushMinUsd.value = c.pushMinUsd != null ? c.pushMinUsd : 100;
+    if (pushMinUsd) {
+      pushMinUsd.value = c.pushMinUsd != null ? c.pushMinUsd : 200;
+      pushMinUsdThreshold = Number(pushMinUsd.value) || 200;
+    }
     if (pushThesisToggle) pushThesisToggle.checked = c.pushThesis !== false;
     renderSignals(latestSignals);
   });
@@ -830,8 +821,9 @@
   }
   if (pushMinUsd) {
     pushMinUsd.addEventListener("change", () => {
-      const v = Math.max(1, Number(pushMinUsd.value) || 100);
+      const v = Math.max(1, Number(pushMinUsd.value) || 200);
       pushMinUsd.value = v;
+      pushMinUsdThreshold = v;
       chrome.storage.local.set({ pushMinUsd: v });
     });
   }
@@ -862,17 +854,6 @@
       const b = it.body || {};
       const text = (b.text || b.message || b.comment || "").toString().slice(0, 60);
       addPushItem(`📣 ${esc(it.displayName || it.userHandle || "")} 发布观点${esc(b.tokenSymbol || b.tokenName || "") ? " · " + esc(b.tokenSymbol || b.tokenName) : ""} · 粉丝 ${esc(msg.followers || "")}${text ? "：" + esc(text) : ""} · ${timeAgo(it.createdAt)}`);
-    }
-    if (msg && msg.action === "tgMessage" && msg.msg) {
-      const m = msg.msg;
-      // 实时 TG 消息 → 前置插入信号列表
-      latestTg = [m, ...latestTg.filter((x) => String(x.msg_id) !== String(m.msg_id))];
-      if (latestTg.length > 100) latestTg.length = 100;
-      renderSignals(latestSignals);
-      const sender = (m.sender && (m.sender.name || m.sender.username)) || "TG 群";
-      const ts = Number(m.date || m.ts || m.timestamp);
-      const ct = isFinite(ts) && ts ? (ts < 1e12 ? ts * 1000 : ts) : Date.now();
-      addPushItem(`📱 TG ${esc(sender)}：${esc(String(m.text || "").slice(0, 60))} · ${timeAgo(ct)}`);
     }
   });
 

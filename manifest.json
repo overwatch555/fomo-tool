@@ -17,9 +17,7 @@
     "https://eth.llamarpc.com/*",
     "https://rpc.ankr.com/*",
     "https://api.mainnet-beta.solana.com/*",
-    "https://api.relay.link/*",
-    "ws://43.155.204.242/*",
-    "http://43.155.204.242/*"
+    "https://api.relay.link/*"
   ],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
