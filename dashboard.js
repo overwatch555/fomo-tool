@@ -8,6 +8,8 @@
   let latestLeaderboard = [];
   let latestSignals = [];
   let latestFeed = [];
+  let latestThesis = []; // feed 观点条目（thesis_created/manual），合并进跟单信号
+  let latestTg = []; // TG 中继消息，合并进跟单信号
   let currentSigFilter = "all";
   let currentFeedFilter = "all";
   let topSignalThreshold = 30;
@@ -132,9 +134,96 @@
 
   function signalAction(s) {
     const type = String(s.type || s.feedType || "").toLowerCase();
+    if (s._isTg) return { label: s._tgLabel || "TG 消息", cls: "new" };
+    if (/thesis|manual/.test(type)) return { label: "💡 观点", cls: "new" };
     if (type.includes("buy")) return { label: "买入", cls: "buy" };
     if (type.includes("sell") || type.includes("close")) return { label: "卖出", cls: "sell" };
     return { label: signLabel(s.type), cls: "new" };
+  }
+
+  /* feed 观点条目（thesis_created / manual）→ 信号行对象，供 renderSignals 复用同一行模板 */
+  function thesisToSignal(f) {
+    if (!f) return null;
+    const b = f.body || {};
+    const t = String(f.feedType || b.feedType || f.type || "").toLowerCase();
+    if (!/thesis|manual/.test(t)) return null;
+    const uid = f.userId || b.userId || (f.user && f.user.id);
+    const text = String(b.text || b.message || b.comment || b.entryMessage || "");
+    const tok = b.token || {};
+    const tokenAddr = b.tokenAddress || f.tokenAddress || tok.address || "";
+    return {
+      _isThesis: true,
+      id: f.id || f.feedItemId || "",
+      type: "thesis_created",
+      userId: uid,
+      displayName: f.displayName || (f.user && f.user.displayName) || b.displayName || "",
+      userHandle: f.userHandle || (f.user && f.user.userHandle) || b.userHandle || "",
+      profilePictureLink: f.profilePictureLink || (f.user && f.user.profilePictureLink) || "",
+      followers: Number(f.followers) || (f.user && Number(f.user.followers)) || Number(b.followers) || 0,
+      networkId: b.networkId || f.networkId || tok.networkId,
+      tokenAddress: tokenAddr,
+      token: {
+        address: tokenAddr,
+        symbol: b.tokenSymbol || f.ticker || tok.symbol || tok.name || "",
+        name: b.tokenName || tok.name || "",
+        imageUrl: tok.imageUrl || (tok.info && (tok.info.imageThumbUrl || tok.info.imageSmallUrl)) || "",
+        networkId: b.networkId || f.networkId || tok.networkId,
+      },
+      comment: text ? { comment: text } : null,
+      body: b,
+      createdAt: f.createdAt,
+      usdAmount: null,
+      price: null,
+    };
+  }
+
+  /* TG 中继消息 → 信号行对象（复用同一行模板） */
+  const TG_TYPE_LABEL = { text: "文本", photo: "图片", video: "视频", document: "文件", sticker: "贴纸", animation: "GIF", service: "系统", other: "其他" };
+  // 从 TG 文本/链接里提取代币地址（EVM CA 或主流追踪站的 Solana 地址）
+  function tgExtractTokenAddr(text, links) {
+    const all = [text || "", ...(links || [])].join(" ");
+    const evm = all.match(/0x[a-fA-F0-9]{40}\b/);
+    if (evm) return evm[0];
+    const sol = all.match(/(?:dexscreener\.com\/solana|gmgn\.ai\/sol\/address|birdeye\.so\/token|pump\.fun\/coin|solscan\.io\/token)\/([A-Za-z0-9]{32,44})/);
+    if (sol) return sol[1];
+    return "";
+  }
+  function tgToSignal(m) {
+    if (!m || !m.msg_id) return null;
+    const text = String(m.text || "");
+    const links = Array.isArray(m.links) ? m.links : [];
+    // 纯系统/无内容消息不展示（避免空白行）
+    if (!text && !links.length && !m.media) return null;
+    const sender = m.sender || {};
+    const label = TG_TYPE_LABEL[m.type] || m.type || "消息";
+    const addr = tgExtractTokenAddr(text, links);
+    const ts = Number(m.date || m.ts || m.timestamp);
+    return {
+      _isTg: true,
+      id: "tg-" + m.msg_id,
+      type: "tg",
+      userId: null,
+      displayName: sender.name || sender.username || "TG 群",
+      userHandle: sender.username || "",
+      profilePictureLink: "",
+      networkId: null,
+      _tgLabel: "TG [" + label + "]",
+      tokenAddress: addr,
+      token: { address: addr, symbol: "", name: "", imageUrl: "", networkId: null },
+      comment: text ? { comment: text } : null,
+      links,
+      media: m.media || null,
+      // 兼容 unix 秒 / ISO 字符串 / 毫秒时间戳
+      createdAt: isFinite(ts) && ts ? (ts < 1e12 ? ts * 1000 : ts) : Date.now(),
+      usdAmount: null,
+      price: null,
+    };
+  }
+  function shortUrl(u) {
+    try {
+      const x = new URL(u);
+      return x.hostname.replace(/^www\./, "") + (x.pathname.length > 22 ? x.pathname.slice(0, 22) + "…" : x.pathname);
+    } catch (_e) { return String(u).slice(0, 40); }
   }
 
   function signalToken(s) {
@@ -174,8 +263,15 @@
     tb.innerHTML = "";
     const usersById = new Map(latestLeaderboard.map((u) => [u.id, u]));
 
-    // 过滤逻辑: all / top / top_buy
-    const rows = (list || []).filter((s) => {
+    // TG 中继消息 + 观点条目（thesis/manual）转换为信号行，合并到列表最前面
+    const tgRows = (latestTg || []).map(tgToSignal).filter(Boolean);
+    const thesisRows = (latestThesis || [])
+      .map(thesisToSignal)
+      .filter(Boolean);
+    const all = [...tgRows, ...thesisRows, ...(list || [])];
+
+    // 过滤逻辑: all / top / top_buy（观点行无排行榜名次 → 自动被 top 过滤排除）
+    const rows = all.filter((s) => {
       const tt = (s.body && Array.isArray(s.body.topTraders) && s.body.topTraders[0]) || {};
       const u = usersById.get(s.userId || tt.id);
       const rank = u ? latestLeaderboard.indexOf(u) + 1 : 0;
@@ -187,7 +283,7 @@
       return true; // "all"
     });
 
-    const topBuyCount = (list || []).filter((s) => {
+    const topBuyCount = (all || []).filter((s) => {
       const tt = (s.body && Array.isArray(s.body.topTraders) && s.body.topTraders[0]) || {};
       const u = usersById.get(s.userId || tt.id);
       const rank = u ? latestLeaderboard.indexOf(u) + 1 : 0;
@@ -198,7 +294,7 @@
     if (countBadge) countBadge.textContent = `${rows.length} 条`;
 
     const meta = $("#sigMeta");
-    if (meta) meta.textContent = `近 100 条信号 · Top ${topSignalThreshold} 榜单买入 ${topBuyCount} 条（已合并推送提醒）`;
+    if (meta) meta.textContent = `近 100 条信号 · Top ${topSignalThreshold} 榜单买入 ${topBuyCount} 条 · 观点 ${thesisRows.length} 条 · TG ${tgRows.length} 条（已合并推送提醒）`;
 
     if (!rows.length) {
       tb.innerHTML = `<tr><td colspan="6" class="empty">${currentSigFilter === "all" ? "暂无跟单信号" : "暂无符合条件的 Top 50 信号"}</td></tr>`;
@@ -237,7 +333,7 @@
           <div class="trader clickable-user" data-uid="${esc(sigUid || "")}" title="点击查看交易者详情">
             ${avatar}
             <div>
-              <div class="name">${esc(sigUser.displayName || sigUser.userHandle || "匿名天团")} ${libBadge(findLibUser(sigUser))}${rank ? `<span class="rank-badge" title="排行榜第 ${rank} 名">#${rank}</span>` : ""}</div>
+              <div class="name">${esc(sigUser.displayName || sigUser.userHandle || "匿名天团")} ${libBadge(findLibUser(sigUser))}${rank ? `<span class="rank-badge" title="排行榜第 ${rank} 名">#${rank}</span>` : ""}${s._isThesis && s.followers ? `<span class="rank-badge" title="推特粉丝 ${s.followers}">👥 ${fmtNum(s.followers)}</span>` : ""}</div>
               <div class="handle">@${esc(sigUser.userHandle || "")}</div>
             </div>
           </div>
@@ -247,6 +343,7 @@
           ${topAlert}
         </td>
         <td>
+          ${s._isTg && !token.address ? `<span class="muted">无代币信息</span>` : `
           <div class="token-cell">
             ${tokImg}
             <div>
@@ -258,12 +355,13 @@
                   <button class="copy-btn" data-copy="${esc(token.address)}" title="点击复制代币地址 (CA)">📋</button>
                 </div>` : ""}
             </div>
-          </div>
+          </div>`}
         </td>
-        <td>${holdingsSummary(leaderboardUser, s)}</td>
+        <td>${s._isTg ? '<span class="muted">📱 TG 消息</span>' : s._isThesis ? '<span class="muted">💡 观点帖</span>' : holdingsSummary(leaderboardUser, s)}</td>
         <td>
           <div class="signal-detail">
             ${comment ? `<div class="comment" data-tr-key="sig${i}" title="${esc(comment)}">${esc(comment)}</div>` : ""}
+            ${s._isTg && s.links && s.links.length ? `<div class="tg-link">🔗 <a href="${esc(s.links[0])}" target="_blank" rel="noopener" title="${esc(s.links[0])}">${esc(shortUrl(s.links[0]))}</a>${s.links.length > 1 ? ` <span class="muted">+${s.links.length - 1}</span>` : ""}</div>` : ""}
             ${s.usdAmount ? `<span class="signal-value ${action.cls === "buy" ? "up" : action.cls === "sell" ? "down" : ""}">${fmtUsd(s.usdAmount)}</span>` : ""}
             ${s.price ? `<span class="signal-price">@${fmtPrice(s.price)}</span>` : ""}
           </div>
@@ -529,6 +627,21 @@
         latestFeed = [];
         renderFeed(null);
       }
+      // 观点条目（thesis/manual）→ 合并进跟单信号列表（走后台 30s 缓存，不额外打接口）
+      try {
+        const tr = await chrome.runtime.sendMessage({ action: "getThesisFeed" });
+        latestThesis = (tr && tr.ok && Array.isArray(tr.items)) ? tr.items : [];
+      } catch (_e) {
+        latestThesis = [];
+      }
+      // TG 中继消息 → 合并进跟单信号列表（后台已持久化到 tgHistory）
+      try {
+        const s = await chrome.storage.local.get("tgHistory");
+        latestTg = Array.isArray(s.tgHistory) ? s.tgHistory : [];
+      } catch (_e) {
+        latestTg = [];
+      }
+      renderSignals(latestSignals);
     } catch (e) {
       const msg = /NO_JWT/.test(e.message || "")
         ? "未登录：请点击 ⚙ 会话 → 打开 fomo.family 登录一次（扩展自动捕获），或手动粘贴 JWT"
@@ -749,6 +862,17 @@
       const b = it.body || {};
       const text = (b.text || b.message || b.comment || "").toString().slice(0, 60);
       addPushItem(`📣 ${esc(it.displayName || it.userHandle || "")} 发布观点${esc(b.tokenSymbol || b.tokenName || "") ? " · " + esc(b.tokenSymbol || b.tokenName) : ""} · 粉丝 ${esc(msg.followers || "")}${text ? "：" + esc(text) : ""} · ${timeAgo(it.createdAt)}`);
+    }
+    if (msg && msg.action === "tgMessage" && msg.msg) {
+      const m = msg.msg;
+      // 实时 TG 消息 → 前置插入信号列表
+      latestTg = [m, ...latestTg.filter((x) => String(x.msg_id) !== String(m.msg_id))];
+      if (latestTg.length > 100) latestTg.length = 100;
+      renderSignals(latestSignals);
+      const sender = (m.sender && (m.sender.name || m.sender.username)) || "TG 群";
+      const ts = Number(m.date || m.ts || m.timestamp);
+      const ct = isFinite(ts) && ts ? (ts < 1e12 ? ts * 1000 : ts) : Date.now();
+      addPushItem(`📱 TG ${esc(sender)}：${esc(String(m.text || "").slice(0, 60))} · ${timeAgo(ct)}`);
     }
   });
 

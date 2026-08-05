@@ -531,6 +531,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     taFetch().then((c) => sendResponse({ ok: true, items: c.items, ts: c.ts }));
     return true; // 异步响应
   }
+  if (msg && msg.action === "getThesisFeed") {
+    // 统一观点 feed 缓存（30s）：跟单信号页合并展示 thesis/manual
+    feedFetch().then((c) => sendResponse({ ok: true, items: c.items, ts: c.ts }));
+    return true; // 异步响应
+  }
 });
 
 /* ---------- 4. WebSocket 实时行情 ---------- */
