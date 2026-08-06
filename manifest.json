@@ -17,7 +17,8 @@
     "https://eth.llamarpc.com/*",
     "https://rpc.ankr.com/*",
     "https://api.mainnet-beta.solana.com/*",
-    "https://api.relay.link/*"
+    "https://api.relay.link/*",
+    "https://api.dexscreener.com/*"
   ],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

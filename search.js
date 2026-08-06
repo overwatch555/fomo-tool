@@ -24,6 +24,52 @@
   }
 
   /* ---------- 代币搜索 ---------- */
+  /* DexScreener 底池拉取（公开接口，无需鉴权）。
+   * FOMO 的 filterTokensSearch 不返回底池明细，这里兜底展示每个交易池。
+   * 失败/无数据时静默降级为空数组，不阻塞主信息。 */
+  async function fetchPools(addr) {
+    if (!addr) return [];
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    try {
+      const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + encodeURIComponent(addr), { signal: ctrl.signal });
+      if (!r.ok) return [];
+      const d = await r.json();
+      const pairs = Array.isArray(d.pairs) ? d.pairs : [];
+      const DEX_NAMES = {
+        orca: "Orca", valiant: "Valiant", raydium: "Raydium", pumpfun: "Pump.fun",
+        uniswap: "Uniswap", pancakeswap: "PancakeSwap", aerodrome: "Aerodrome",
+        jupiter: "Jupiter", meteora: "Meteora", whirldex: "Whirl", stoneswap: "StoneSwap",
+        bullx: "BullX", photon: "Photon", jupag: "Jup.AG", meteoraCP: "Meteora CP",
+      };
+      const CHAIN_NAMES = {
+        solana: "Solana", ethereum: "Ethereum", bsc: "BSC", base: "Base", x1: "X1",
+        ethos: "Ethos", arbitrum: "Arbitrum", polygon: "Polygon", zksync: "zkSync", optimism: "Optimism",
+      };
+      return pairs
+        .filter((p) => p && Number((p.liquidity && p.liquidity.usd) || 0) > 0)
+        .map((p) => ({
+          pairAddress: p.pairAddress || "",
+          dexName: DEX_NAMES[String(p.dexId || "").toLowerCase()] || (p.dexId || "DEX"),
+          chain: CHAIN_NAMES[String(p.chainId || "").toLowerCase()] || (p.chainId || ""),
+          baseSymbol: (p.baseToken && p.baseToken.symbol) || "?",
+          quoteSymbol: (p.quoteToken && p.quoteToken.symbol) || "?",
+          liquidity: (p.liquidity && p.liquidity.usd) || 0,
+          volume24: (p.volume && p.volume.h24) || 0,
+          priceChange24: (p.priceChange && p.priceChange.h24) || 0,
+          txns5mBuys: (p.txns && p.txns.m5 && p.txns.m5.buys) || 0,
+          txns5mSells: (p.txns && p.txns.m5 && p.txns.m5.sells) || 0,
+          fdv: p.fdv || 0,
+          marketCap: p.marketCap || 0,
+        }))
+        .sort((a, b) => b.liquidity - a.liquidity);
+    } catch (_e) {
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function searchToken(q) {
     // 1. 识别代币（按地址/短语）
     const res = await api("/proxy/filterTokensSearch", { method: "POST", body: { phrase: q } });
@@ -34,17 +80,19 @@
     const nid = tok.networkId;
     const addr = tok.address || q;
 
-    // 2. 并行拉取讨论、持有者、单币动态
-    const [thesis, holders, tfeed] = await Promise.all([
+    // 2. 并行拉取讨论、持有者、单币动态 + DexScreener 底池
+    const [thesis, holders, tfeed, pools] = await Promise.all([
       api("/feed/token/thesis", { params: { tokenAddress: addr, networkId: nid, threshold: 0 } }).catch(() => null),
       api("/hodlers/top?tokens=" + encodeURIComponent(JSON.stringify([{ address: addr, networkId: nid }]))).catch(() => null),
       api("/feed/token", { params: { tokenAddress: addr, networkId: nid, excludeThesis: "true", threshold: 0 } }).catch(() => null),
+      fetchPools(addr).catch(() => []),
     ]);
     return {
       token: t,
       thesis: thesis && thesis.responseObject ? thesis.responseObject.items || [] : [],
       holders: holders && holders.responseObject ? holders.responseObject : [],
       feed: tfeed && tfeed.responseObject ? tfeed.responseObject.feed || [] : [],
+      pools: pools || [],
     };
   }
 
@@ -139,6 +187,32 @@
           <div class="t-item"><div class="k">1h涨跌</div><div class="v ${pctClass(c1)}">${fmtPct(c1)}</div></div>
         </div>
       </div>`;
+
+    // 底池信息（DexScreener 兜底，按流动性排序，主力池高亮）
+    const pools = result.pools || [];
+    if (pools.length) {
+      html += `<div class="sec-title"><span class="bar"></span>💧 底池信息<span class="sec-count">${pools.length} 个池子</span></div>`;
+      html += pools.slice(0, 6).map((p, pi) => {
+        const mainCls = pi === 0 ? " pool-main" : "";
+        const liq = Number(p.liquidity) || 0;
+        const vol = Number(p.volume24) || 0;
+        const chg = Number(p.priceChange24) || 0;
+        const m5 = `${fmtNum(p.txns5mBuys, 0)}/${fmtNum(p.txns5mSells, 0)}`;
+        const volLine = vol > 0 ? `<span>24h 成交 <b>${fmtUsd(vol)}</b></span>` : "";
+        const chgLine = chg !== 0 ? `<span class="${pctClass(chg)}">24h ${fmtPct(chg)}</span>` : "";
+        const fdvLine = p.fdv > 0 ? `<span>FDV ${fmtUsd(p.fdv)}</span>` : "";
+        return `
+        <div class="pool-card${mainCls}">
+          <div class="p-row1">
+            <span class="p-dex">${esc(p.dexName)}</span>
+            <span class="p-pair">${esc(p.baseSymbol)}/${esc(p.quoteSymbol)}</span>
+            <span class="p-chain">${esc(p.chain)}</span>
+            <span class="p-liq">💵 ${fmtUsd(liq)}</span>
+          </div>
+          <div class="p-row2">${volLine}${chgLine}${fdvLine}<span>5m 买/卖 <b>${m5}</b></span></div>
+        </div>`;
+      }).join("");
+    }
 
     // 讨论区（thesis）
     html += `<div class="sec-title"><span class="bar"></span>💬 大家怎么说<span class="sec-count">${result.thesis.length}</span></div>`;
