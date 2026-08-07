@@ -37,6 +37,7 @@
 <div id="searchResult" class="panel search-result" style="display:none">
   <div class="search-head">
     <h2 id="srTitle">搜索结果</h2>
+    <span id="srLive" class="sr-live" style="display:none"></span>
     <button class="btn" id="srClose">× 关闭</button>
   </div>
   <div id="srContent"></div>
@@ -133,7 +134,7 @@
     </div>
     <hr class="mt8">
     <h3>推送设置</h3>
-    <p style="font-size:13px;color:var(--muted);margin:0 0 10px">后台每 10 秒检测：排行榜 Top 交易者买入、全网任何人买入金额 ≥ 阈值，以及 ≥1k 粉丝大V发布观点，触发桌面通知。</p>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 10px">后台每 10 秒检测：排行榜 Top 交易者买入、全网任何人买入金额 ≥ 阈值，以及 ≥1k 粉丝大V发布观点。命中后弹桌面通知，并在本页右下角弹出提示（悬停可停留，点击可直接搜索代币）。</p>
     <div class="row">
       <label class="toggle"><input type="checkbox" id="pushToggle" checked> 买入信号推送</label>
       <label style="font-size:13px;color:var(--muted)">名次范围 <input type="number" id="pushTopN" value="30" min="1" max="50" style="width:70px;margin-left:6px;padding:4px 8px;background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--text)"></label>
@@ -142,7 +143,6 @@
       <label style="font-size:13px;color:var(--muted)">任意人买入金额 ≥ $<input type="number" id="pushMinUsd" value="200" min="1" style="width:70px;margin-left:4px;padding:4px 8px;background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--text)"></label>
       <label class="toggle" style="margin-left:14px"><input type="checkbox" id="pushThesisToggle" checked> 大V观点推送（≥1k 粉丝）</label>
     </div>
-    <div class="push-test" id="pushTest" style="display:none"></div>
   </div>
 </div>
 
@@ -168,5 +168,8 @@
 <script src="search.js"></script>
 <script src="user.js"></script>
 <script src="dashboard.js"></script>
+
+<!-- 推送 Toast 容器（右下角弹出，hover 停留，点击搜索代币） -->
+<div class="toast-host" id="toastHost"></div>
 </body>
 </html>

@@ -832,28 +832,70 @@
       chrome.storage.local.set({ pushThesis: pushThesisToggle.checked });
     });
   }
-  // 后台推送 → 看板显示最近推送（买入 / 观点）
-  const addPushItem = (text) => {
-    const box = document.getElementById("pushTest");
-    if (!box) return;
-    box.style.display = "";
-    const item = document.createElement("div");
-    item.className = "push-item";
-    item.textContent = text;
-    box.prepend(item);
-    while (box.children.length > 8) box.lastChild.remove();
+  /* ---------- 推送 Toast（右下角弹出；hover 停留；点击搜索代币） ---------- */
+  const TOAST_MS = 10000; // 自动消失时长
+  const TOAST_MAX = 5;    // 同时最多显示 5 个
+  const dismissToast = (el) => {
+    el.classList.add("out");
+    setTimeout(() => el.remove(), 320);
+  };
+  const showPushToast = ({ title, line, token }) => {
+    const host = document.getElementById("toastHost");
+    if (!host) return;
+    // 同一代币的重复推送 → 只保留最新一条（避免刷屏）
+    const key = token || ("t:" + title);
+    const prev = Array.from(host.children).find((el) => el.dataset.key === key);
+    if (prev) prev.remove();
+    const el = document.createElement("div");
+    el.className = "push-toast" + (token ? " clickable" : "");
+    el.dataset.key = key;
+    el.innerHTML =
+      `<div class="pt-title">${title}</div>` +
+      `<div class="pt-line">${line || ""}</div>` +
+      (token ? `<div class="pt-hint">👆 点击搜索代币</div>` : "") +
+      `<span class="pt-close" title="关闭">×</span>`;
+    host.appendChild(el);
+    while (host.children.length > TOAST_MAX) host.firstElementChild.remove();
+    requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
+    const dismiss = () => dismissToast(el);
+    let timer = setTimeout(dismiss, TOAST_MS);
+    // hover 停留：悬停时暂停自动消失，移开重新计时
+    el.addEventListener("mouseenter", () => { clearTimeout(timer); el.classList.add("hover"); });
+    el.addEventListener("mouseleave", () => { el.classList.remove("hover"); timer = setTimeout(dismiss, TOAST_MS); });
+    el.addEventListener("click", (ev) => {
+      if (ev.target.closest(".pt-close")) { clearTimeout(timer); dismiss(); return; }
+      if (token && window.__fomoSearch && window.__fomoSearch.run) {
+        clearTimeout(timer);
+        dismiss();
+        window.__fomoSearch.run(token); // 点击 toast → 搜索该代币
+        const sr = document.getElementById("searchResult");
+        if (sr) sr.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
   };
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.action === "topBuyPush") {
       const s = msg.sig || {};
       const ticker = s.ticker || (s.token && s.token.symbol) || "";
-      addPushItem(`${esc(s.displayName || s.userHandle || "")} 买入 ${esc(ticker)} ${msg.rank ? "#" + msg.rank : ""}${msg.byAmount && s.usdAmount ? " · $" + esc(s.usdAmount) : ""} · ${timeAgo(s.createdAt)}`);
+      const token = s.tokenAddress || (s.token && s.token.address) || "";
+      showPushToast({
+        title: `${esc(s.displayName || s.userHandle || "")} 买入 ${esc(ticker)}${msg.rank ? " #" + msg.rank : ""}`,
+        line: `${msg.byAmount && s.usdAmount ? "金额 $" + esc(s.usdAmount) + " · " : ""}${timeAgo(s.createdAt)}`,
+        token,
+      });
     }
     if (msg && msg.action === "thesisPush") {
       const it = msg.item || {};
       const b = it.body || {};
       const text = (b.text || b.message || b.comment || "").toString().slice(0, 60);
-      addPushItem(`📣 ${esc(it.displayName || it.userHandle || "")} 发布观点${esc(b.tokenSymbol || b.tokenName || "") ? " · " + esc(b.tokenSymbol || b.tokenName) : ""} · 粉丝 ${esc(msg.followers || "")}${text ? "：" + esc(text) : ""} · ${timeAgo(it.createdAt)}`);
+      const tokenName = b.tokenSymbol || b.tokenName || it.ticker ||
+        (b.token && (b.token.symbol || b.token.name)) || "";
+      const token = b.tokenAddress || (b.token && b.token.address) || it.tokenAddress || "";
+      showPushToast({
+        title: `📣 ${esc(it.displayName || it.userHandle || "")} 发布观点${tokenName ? " · " + esc(tokenName) : ""}`,
+        line: `粉丝 ${esc(msg.followers || "")}${text ? "：" + esc(text) : ""} · ${timeAgo(it.createdAt)}`,
+        token,
+      });
     }
   });
 

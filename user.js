@@ -828,6 +828,7 @@
 
   /* ============ 全局点击：打开用户详情 ============ */
   document.addEventListener("click", (e) => {
+    if (e.defaultPrevented) return; // search.js 反推按钮等已处理的事件不重复响应
     const el = e.target.closest("[data-uid]");
     if (!el) return;
     e.preventDefault();
@@ -837,5 +838,10 @@
   });
 
   /* ============ 导出 ============ */
-  window.__fomoUser = { openUserDrawer, indexUser, indexTradeAddrs, getIndex: () => window.__addrIndex, addMyLib, removeMyLib, getMyLib };
+  window.__fomoUser = {
+    openUserDrawer, indexUser, indexTradeAddrs,
+    getIndex: () => window.__addrIndex,
+    addMyLib, removeMyLib, getMyLib,
+    saveLookupHit, applyLookupHit,
+  };
 })();

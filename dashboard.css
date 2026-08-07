@@ -304,12 +304,44 @@ tbody tr:hover { background: rgba(26,35,56,.5); }
   box-shadow: 0 1px 4px rgba(255,159,28,.35); white-space: nowrap; cursor: default;
 }
 
-/* 推送条目 */
-.push-item {
-  font-size: 12.5px; color: var(--text); padding: 6px 10px; margin-top: 6px;
-  background: rgba(108,92,231,.1); border: 1px solid rgba(108,92,231,.28);
-  border-radius: 8px; display: flex; justify-content: space-between; gap: 8px;
+/* 推送 Toast（右下角弹出；hover 停留；点击搜索代币） */
+.toast-host {
+  position: fixed; right: 16px; bottom: 16px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 8px;
+  width: 340px; max-width: calc(100vw - 32px);
+  pointer-events: none; /* 容器不拦截点击，仅每个 toast 自己可点 */
 }
+.push-toast {
+  position: relative;
+  pointer-events: auto;
+  background: rgba(20, 27, 44, .97);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 10px 12px 10px 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
+  transform: translateX(120%);
+  opacity: 0;
+  transition: transform .28s ease, opacity .28s ease, border-color .2s ease;
+  overflow: hidden;
+}
+.push-toast.show { transform: translateX(0); opacity: 1; }
+.push-toast.out { transform: translateX(120%); opacity: 0; }
+.push-toast.hover { border-color: var(--accent2); }
+.push-toast.clickable { cursor: pointer; }
+.push-toast.clickable:hover { border-left-color: var(--accent2); }
+.pt-title {
+  font-size: 13px; font-weight: 700; color: var(--text);
+  line-height: 1.45; padding-right: 18px; word-break: break-all;
+}
+.pt-line { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.55; }
+.pt-hint { font-size: 11px; color: var(--accent2); margin-top: 5px; }
+.pt-close {
+  position: absolute; top: 7px; right: 10px;
+  font-size: 15px; line-height: 1; color: var(--muted);
+  cursor: pointer; user-select: none;
+}
+.pt-close:hover { color: var(--text); }
 
 /* 页脚提示 */
 .footnote { padding: 8px 24px 0; font-size: 12px; color: var(--muted); }
@@ -345,6 +377,10 @@ tbody tr:hover { background: rgba(26,35,56,.5); }
   margin-bottom: 14px;
 }
 .search-head h2 { font-size: 16px; }
+.sr-live {
+  font-size: 12px; color: var(--muted); margin-left: 10px;
+  letter-spacing: .3px; flex: 1; text-align: left; min-width: 0;
+}
 
 /* 代币概览卡(hero, 重点突出) */
 .token-overview {
@@ -687,4 +723,90 @@ tbody tr:hover { background: rgba(26,35,56,.5); }
   border: 1px solid rgba(34,197,94,.25); border-radius: 6px;
   padding: 6px 10px; margin-bottom: 8px;
 }
+
+/* ================= 一键批量反推（独立面板，不动原布局） ================= */
+.sec-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.reveal-all-btn {
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(108, 92, 231, .5);
+  background: linear-gradient(135deg, rgba(108, 92, 231, .25), rgba(0, 212, 255, .18));
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 700;
+  transition: all .2s;
+  white-space: nowrap;
+}
+.reveal-all-btn:hover { box-shadow: 0 0 10px rgba(108, 92, 231, .45); }
+.reveal-panel {
+  margin: 8px 0 14px;
+  padding: 12px 14px;
+  background: var(--bg2);
+  border: 1px solid rgba(108, 92, 231, .35);
+  border-radius: 12px;
+}
+.reveal-panel-head { font-weight: 700; font-size: 13px; margin-bottom: 2px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.reveal-panel-sub { font-size: 11px; color: var(--muted); font-weight: 400; }
+.reveal-filters { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.reveal-filters label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted);
+  background: var(--bg); border: 1px solid rgba(139, 148, 168, .25);
+  padding: 4px 10px; border-radius: 8px;
+}
+.reveal-filters input {
+  width: 88px; background: var(--bg2); border: 1px solid rgba(139, 148, 168, .3);
+  color: var(--text); border-radius: 6px; padding: 3px 6px; font-size: 12px;
+}
+.reveal-filters input:focus { outline: none; border-color: var(--accent); }
+.reveal-actions { display: flex; align-items: center; gap: 8px; }
+.rf-btn {
+  font-size: 12px; padding: 6px 16px; border-radius: 8px;
+  border: 1px solid rgba(139, 148, 168, .35); background: var(--bg);
+  color: var(--text); cursor: pointer; font-weight: 600; transition: all .2s;
+}
+.rf-btn:hover { border-color: var(--accent); }
+.rf-btn:disabled { opacity: .55; cursor: wait; }
+.rf-primary { border-color: transparent; background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
+.rf-primary:hover { box-shadow: 0 0 12px rgba(108, 92, 231, .5); }
+.reveal-count { font-size: 11px; color: var(--muted); margin-left: auto; }
+.reveal-progress { margin: 10px 0 4px; }
+.reveal-progress-bar { height: 6px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.reveal-progress-bar .fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .3s; }
+.reveal-progress-text { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.reveal-results { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
+.reveal-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--bg); border: 1px solid rgba(139, 148, 168, .2);
+  padding: 7px 10px; border-radius: 8px; font-size: 12px;
+}
+.reveal-rank { font-weight: 800; color: var(--accent2); min-width: 26px; }
+.reveal-name { font-weight: 600; color: var(--text); min-width: 90px; }
+.reveal-addrs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-family: Consolas, monospace; }
+.reveal-addrs .copy-btn {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; padding: 1px 4px; border-radius: 4px;
+}
+.reveal-addrs .copy-btn:hover { color: var(--text); background: rgba(108, 92, 231, .25); }
+.reveal-addrs a { color: var(--accent2); font-size: 11px; text-decoration: none; }
+.reveal-addrs a:hover { text-decoration: underline; }
+.reveal-empty { color: var(--muted); font-size: 11px; }
+.reveal-err { color: var(--red); font-size: 11px; }
+
+/* 通用真实/状态徽章（详情抽屉、持有者卡片共用） */
+.fp-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  vertical-align: middle;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+.fp-badge.fp-real { background: rgba(34, 197, 94, .15); color: var(--green); border: 1px solid rgba(34, 197, 94, .3); }
+.fp-badge.fp-fake { background: rgba(245, 181, 10, .15); color: var(--yellow); border: 1px solid rgba(245, 181, 10, .3); }
+.fp-badge.fp-eoa { background: rgba(139, 148, 168, .15); color: var(--muted); border: 1px solid rgba(139, 148, 168, .25); }
+.fp-badge.fp-7702 { background: rgba(0, 212, 255, .12); color: var(--accent2); border: 1px solid rgba(0, 212, 255, .3); }
+.fp-badge.fp-contract { background: rgba(139, 148, 168, .15); color: var(--muted); border: 1px solid rgba(139, 148, 168, .25); }
 
