@@ -528,6 +528,9 @@ tbody tr:hover { background: rgba(26,35,56,.5); }
 .holder-card .h-pnl { font-size: 11.5px; font-weight: 600; margin-top: 2px; }
 .holder-card .h-pnl.up { color: var(--green); }
 .holder-card .h-pnl.down { color: var(--red); }
+.holder-card .h-buy { font-size: 12px; font-weight: 600; margin-top: 3px; }
+.holder-card .h-buy b { color: var(--accent2); font-weight: 700; }
+.holder-card .h-time { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
 /* 钱包匹配用户卡 */
 .wallet-user {
@@ -809,4 +812,33 @@ tbody tr:hover { background: rgba(26,35,56,.5); }
 .fp-badge.fp-eoa { background: rgba(139, 148, 168, .15); color: var(--muted); border: 1px solid rgba(139, 148, 168, .25); }
 .fp-badge.fp-7702 { background: rgba(0, 212, 255, .12); color: var(--accent2); border: 1px solid rgba(0, 212, 255, .3); }
 .fp-badge.fp-contract { background: rgba(139, 148, 168, .15); color: var(--muted); border: 1px solid rgba(139, 148, 168, .25); }
+
+/* ---------- 关注列表（Watchlist） ---------- */
+.watch-toolbar { display: flex; align-items: center; gap: 8px; margin: 1px 0 12px; flex-wrap: wrap; }
+.watch-toolbar > div { flex: 1 1 auto; margin-right: auto; }
+.watch-add { display: flex; gap: 8px; margin-bottom: 14px; }
+.watch-add .search-input, .watch-add input { flex: 1; }
+.watch-add input.err { border-color: var(--red); box-shadow: 0 0 0 2px rgba(255, 77, 109, .2); }
+.watch-list { display: flex; flex-direction: column; gap: 8px; max-height: 520px; overflow-y: auto; padding-right: 4px; }
+.watch-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; transition: all .2s ease;
+}
+.watch-item:hover { border-color: rgba(108, 92, 231, .7); background: #161f36; transform: translateY(-1px); }
+.watch-item .trader { flex: 1; min-width: 0; cursor: pointer; }
+.watch-top { border-left: 3px solid var(--accent2); }
+.watch-remove {
+  flex: none; width: 26px; height: 26px; padding: 0; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 7px;
+}
+.watch-remove:hover { color: var(--red); border-color: var(--red); background: rgba(255, 77, 109, .1); }
+.watch-src {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; vertical-align: middle; white-space: nowrap;
+}
+.watch-src-real { background: rgba(34, 197, 94, .15); color: var(--green); border: 1px solid rgba(34, 197, 94, .3); }
+.watch-src-top { background: rgba(0, 212, 255, .12); color: var(--accent2); border: 1px solid rgba(0, 212, 255, .3); }
+.watch-src-manual { background: rgba(108, 92, 231, .15); color: #a29bfe; border: 1px solid rgba(108, 92, 231, .3); }
 

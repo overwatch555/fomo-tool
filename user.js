@@ -141,8 +141,19 @@
       const map = s[lookupHitsKey] || {};
       map[uid] = { ...(map[uid] || {}), ...h, ts: Date.now() };
       await chrome.storage.local.set({ [lookupHitsKey]: map });
+      // 反推命中真实地址 → 自动进入关注列表（source=reveal），供跟单信号/交易动态监控
+      if (uid) watchAdd(uid, { displayName: h && h.displayName, userHandle: h && h.handle }, "reveal").catch(() => {});
       return true;
     } catch (_e) { return false; }
+  }
+
+  /* 该 uid 是否已有真实地址（历史反推收录 / 预置地址库），供批量反推跳过 */
+  function hasRealAddress(uid) {
+    if (!uid) return false;
+    const c = window.__userCache.get(uid);
+    if (c && (c._evmReal || c._solReal)) return true;
+    const h = lookupHits.get(uid);
+    return !!(h && (h.evm || h.sol));
   }
 
   async function seedLookupHits() {
@@ -153,6 +164,102 @@
     } catch (_e) {}
   }
   seedLookupHits();
+
+  /* ============ 关注列表（Watchlist） ============
+   * 组成：手动添加 + 反推命中真实地址的用户（自动收录, source=reveal）
+   * 持久化于 chrome.storage.local(fomoWatchlist, uid → 记录)
+   * Top 榜前 N 名由 dashboard 动态并入展示与监控（不持久化）
+   * 屏蔽：用户主动移除的对象记录在 fomoWatchBlocked，即使其回到 Top 榜前 N 也不并入、不被监控
+   */
+  const watchKey = "fomoWatchlist";
+  const watchBlockedKey = "fomoWatchBlocked";
+  let watchMap = new Map(); // uid -> { uid, displayName, userHandle, avatar, source, addedAt }
+  let watchBlocked = new Set(); // 主动移除的 uid
+
+  async function loadWatchlist() {
+    try {
+      const s = await chrome.storage.local.get([watchKey, watchBlockedKey]);
+      const obj = s[watchKey] || {};
+      watchMap = new Map();
+      for (const [uid, w] of Object.entries(obj)) {
+        watchMap.set(uid, { uid, displayName: "", userHandle: "", avatar: "", source: "manual", addedAt: Date.now(), ...(w || {}), uid });
+      }
+      watchBlocked = new Set(Array.isArray(s[watchBlockedKey]) ? s[watchBlockedKey] : []);
+    } catch (_e) {}
+  }
+
+  async function saveWatchlist() {
+    try {
+      const obj = {};
+      watchMap.forEach((w, uid) => { obj[uid] = { ...w, uid }; });
+      await chrome.storage.local.set({ [watchKey]: obj });
+    } catch (_e) {}
+  }
+
+  async function saveWatchBlocked() {
+    try {
+      await chrome.storage.local.set({ [watchBlockedKey]: Array.from(watchBlocked) });
+    } catch (_e) {}
+  }
+
+  async function watchAdd(uid, meta, source) {
+    if (!uid) return false;
+    const prev = watchMap.get(uid) || {};
+    const w = {
+      uid,
+      displayName: (meta && meta.displayName) || prev.displayName || "",
+      userHandle: (meta && (meta.userHandle || meta.handle)) || prev.userHandle || "",
+      avatar: (meta && (meta.avatar || meta.profilePictureLink)) || prev.avatar || "",
+      source: source || prev.source || "manual",
+      addedAt: prev.addedAt || Date.now(),
+    };
+    watchMap.set(uid, w);
+    // 重新关注 → 解除屏蔽（覆盖之前的移除）
+    if (watchBlocked.delete(uid)) await saveWatchBlocked();
+    await saveWatchlist();
+    return true;
+  }
+
+  /* 移除关注：从关注列表删除 + 加入屏蔽（防止 Top 榜重新并入/被监控） */
+  async function watchRemove(uid) {
+    if (!uid) return false;
+    const had = watchMap.delete(uid) || !watchBlocked.has(uid);
+    watchBlocked.add(uid);
+    await saveWatchlist();
+    await saveWatchBlocked();
+    return had;
+  }
+
+  function watchHas(uid) {
+    return !!uid && watchMap.has(uid);
+  }
+
+  function watchItems() {
+    return Array.from(watchMap.values());
+  }
+
+  function watchBlock(uid) {
+    if (!uid) return;
+    watchBlocked.add(uid);
+    watchMap.delete(uid);
+    saveWatchBlocked();
+    saveWatchlist();
+  }
+
+  function watchUnblock(uid) {
+    if (!uid) return;
+    watchBlocked.delete(uid);
+    saveWatchBlocked();
+  }
+
+  function isWatchBlocked(uid) {
+    return !!uid && watchBlocked.has(uid);
+  }
+
+  function watchBlockedList() {
+    return Array.from(watchBlocked);
+  }
+  loadWatchlist();
 
   function indexTradeAddrs(tradeId, trade, swaps, transfers, uidFallback) {
     const uid = trade.userId || uidFallback;
@@ -842,6 +949,9 @@
     openUserDrawer, indexUser, indexTradeAddrs,
     getIndex: () => window.__addrIndex,
     addMyLib, removeMyLib, getMyLib,
-    saveLookupHit, applyLookupHit,
+    saveLookupHit, applyLookupHit, hasRealAddress,
+    // 关注列表（Watchlist）
+    loadWatchlist, watchAdd, watchRemove, watchHas, watchItems,
+    watchBlock, watchUnblock, isWatchBlocked, watchBlockedList,
   };
 })();

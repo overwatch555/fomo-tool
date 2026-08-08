@@ -275,6 +275,8 @@
       const amt = h.humanAmount;
       const val = Number(h.value) || 0;
       const pnl = Number(h.pnl) || 0;
+      const buyCost = buyCostOf(h);
+      const buyTs = buyTimeOf(h);
       const barW = maxSize > 0 ? Math.max(5, (sizeOf(h) / maxSize) * 100) : 0;
       const top = hi === 0 ? " top1" : hi === 1 ? " top2" : hi === 2 ? " top3" : "";
       return `
@@ -293,6 +295,8 @@
           ${amt !== undefined ? `<div class="h-amt">${fmtAmount(amt)} 枚</div>` : ""}
           ${val ? `<div class="h-val">≈ ${fmtUsd(val)}</div>` : ""}
           ${pnl !== 0 ? `<div class="h-pnl ${pctClass(pnl)}">${pnl > 0 ? "+" : ""}${fmtUsd(pnl)}</div>` : ""}
+          ${buyCost ? `<div class="h-buy">买入 <b>${fmtUsd(buyCost)}</b></div>` : ""}
+          ${buyTs ? `<div class="h-time">🕐 ${timeAgo(buyTs)} 买入</div>` : ""}
         </div>
       </div>`;
     }).join("");
@@ -556,12 +560,49 @@
   let __holderCtx = [];    // 当前代币的持有者上下文 [{h, rank}]
   let __revealRunning = false;
 
-  /* 持有者估算成本：当前市值 - 未实现盈亏 ≈ 买入成本（算不出返回 null） */
+  /* 持有者估算成本：优先 API 显式 costBasis/cost，否则 市值-盈亏 兜底 */
   function costOf(h) {
+    if (!h) return null;
+    for (const k of ["costBasis", "cost"]) {
+      if (h[k] == null) continue;
+      const v = Number(h[k]);
+      if (isFinite(v) && v > 0) return v;
+    }
     const v = Number(h.value);
     if (isNaN(v) || !isFinite(v)) return null;
     const pnl = Number(h.pnl);
     return !isNaN(pnl) && isFinite(pnl) ? v - pnl : null;
+  }
+
+  /* 持有者购买金额（成本 USD）：优先 API 显式字段，兜底用 市值-盈亏 估算 */
+  function buyCostOf(h) {
+    if (!h) return null;
+    for (const k of ["boughtUsd", "buyUsd", "costBasis", "costUsd", "cost"]) {
+      if (h[k] == null) continue;
+      const v = Number(h[k]);
+      if (isFinite(v) && v > 0) return v;
+    }
+    const c = costOf(h);
+    return c != null && c > 0 ? c : null;
+  }
+
+  /* 持有者购买时间：显式时间戳字段；缺失时按 averageHoldTimeSeconds 反推估算 */
+  function buyTimeOf(h) {
+    if (!h) return null;
+    for (const k of ["firstBuyTime", "buyTime", "boughtAt", "firstBuy"]) {
+      if (h[k] == null) continue;
+      let t = Number(h[k]);
+      if (!isFinite(t) || t <= 0) continue;
+      if (t < 1e12) t *= 1000; // 秒 → 毫秒
+      if (t > Date.now() + 86400000) continue; // 未来时间视为无效
+      return t;
+    }
+    // 兜底：当前时间 - 平均持仓时长 ≈ 估算买入时间
+    const hold = Number(h.averageHoldTimeSeconds);
+    if (isFinite(hold) && hold > 0) {
+      return Date.now() - hold * 1000;
+    }
+    return null;
   }
 
   /* 按筛选条件过滤持有者（持仓排名 / 持仓金额 / 持仓数量 / 持仓成本） */
@@ -576,6 +617,18 @@
       if (f.cost > 0 && (cost == null || cost < f.cost)) return false;
       return true;
     });
+  }
+
+  /* 该持有者是否已有真实地址（预置地址库 / 历史反推收录），有则批量反推时跳过不再查 */
+  function hasRealAddress(uid) {
+    if (!uid) return false;
+    try {
+      if (window.__fomoUser && window.__fomoUser.hasRealAddress) {
+        return !!window.__fomoUser.hasRealAddress(uid);
+      }
+      const c = (window.__userCache || new Map()).get(uid);
+      return !!(c && (c._evmReal || c._solReal));
+    } catch (_e) { return false; }
   }
 
   /* 单行结果：排名 + 名字 + 真实地址（复制/链上链接） */
@@ -617,13 +670,17 @@
     };
   }
 
-  /* 批量反推主流程：逐个调用 lookup 引擎，命中自动收录 */
+  /* 批量反推主流程：逐个调用 lookup 引擎，命中自动收录（已有真实地址的自动跳过） */
   async function runBatchReveal(panel) {
     if (__revealRunning || !window.__lookup) return;
-    const targets = filterHolders(__holderCtx, readFilters(panel));
+    const all = filterHolders(__holderCtx, readFilters(panel));
     const resultsEl = panel.querySelector(".reveal-results");
+    const skipKnown = all.filter((item) => hasRealAddress(item.h.user && item.h.user.id));
+    const targets = all.filter((item) => !hasRealAddress(item.h.user && item.h.user.id));
     if (!targets.length) {
-      resultsEl.innerHTML = `<div class="reveal-empty">没有持有者符合筛选条件</div>`;
+      resultsEl.innerHTML = skipKnown.length
+        ? `<div class="reveal-empty">✅ 符合条件的 ${skipKnown.length} 人全部已有真实地址，无需反推</div>`
+        : `<div class="reveal-empty">没有持有者符合筛选条件</div>`;
       return;
     }
     __revealRunning = true;
@@ -635,6 +692,7 @@
     startBtn.textContent = "反推中…";
     prog.style.display = "block";
     resultsEl.innerHTML = "";
+    const skipInfo = skipKnown.length ? ` · 跳过 ${skipKnown.length} 人（已有真实地址）` : "";
     let hitCount = 0;
     for (let i = 0; i < targets.length; i++) {
       const item = targets[i];
@@ -657,7 +715,7 @@
       }
     }
     progBar.style.width = "100%";
-    progText.textContent = `✅ 完成：共反推 ${targets.length} 人，命中 ${hitCount} 个真实地址（已自动收录到地址库）`;
+    progText.textContent = `✅ 完成：共反推 ${targets.length} 人，命中 ${hitCount} 个真实地址（已自动收录到地址库）${skipInfo}`;
     startBtn.disabled = false;
     startBtn.textContent = "🔄 再反推一次";
     __revealRunning = false;
@@ -685,8 +743,10 @@
       <div class="reveal-progress" style="display:none"><div class="reveal-progress-bar"><div class="fill" style="width:0%"></div></div><div class="reveal-progress-text"></div></div>
       <div class="reveal-results"></div>`;
     const recount = () => {
-      const n = filterHolders(__holderCtx, readFilters(div)).length;
-      div.querySelector("#rfCount").textContent = `符合条件 ${n} 人 / 共 ${__holderCtx.length} 人`;
+      const all = filterHolders(__holderCtx, readFilters(div));
+      const known = all.filter((item) => hasRealAddress(item.h.user && item.h.user.id)).length;
+      div.querySelector("#rfCount").textContent =
+        `符合条件 ${all.length} 人 / 共 ${__holderCtx.length} 人${known ? ` · 已有地址 ${known} 人（将跳过）` : ""}`;
     };
     ["#rfRank", "#rfValue", "#rfAmount", "#rfCost"].forEach((sel) => div.querySelector(sel).addEventListener("input", recount));
     div.querySelector("#rfStart").addEventListener("click", () => runBatchReveal(div));

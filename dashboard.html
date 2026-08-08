@@ -46,6 +46,7 @@
 <nav class="tabs">
   <button class="tab active" data-tab="leaderboard">排行榜</button>
   <button class="tab" data-tab="signals">跟单信号</button>
+  <button class="tab" data-tab="watchlist">🎯 关注列表</button>
   <button class="tab" data-tab="trending">热门代币</button>
   <button class="tab" data-tab="feed">交易动态</button>
 </nav>
@@ -70,6 +71,7 @@
         <button class="filter-tab-btn active" data-sig-filter="all">全部信号</button>
         <button class="filter-tab-btn" data-sig-filter="top">⚡ 仅看 Top 50</button>
         <button class="filter-tab-btn" data-sig-filter="top_buy">🔥 Top 50 仅买入</button>
+        <button class="filter-tab-btn" data-sig-filter="watch">🎯 仅关注列表</button>
       </div>
     </div>
     <div class="signal-table-wrapper">
@@ -80,6 +82,24 @@
         <tbody id="sigBody"></tbody>
       </table>
     </div>
+  </div>
+
+  <div id="watchlist" class="tabview" style="display:none">
+    <div class="watch-toolbar">
+      <div>
+        <div class="section-title">🎯 关注列表 <span class="badge new" id="watchCountBadge">0 人</span></div>
+        <div class="section-sub">已标注真实地址的用户（反推自动收录）+ Top 榜前 30 名自动并入。可手动添加 FOMO 用户，也可点 ✕ 移除列表中的任何人（移除后不再自动并入、不再被监控）；跟单信号与交易动态支持切换「仅关注列表」过滤。</div>
+      </div>
+      <button class="filter-tab-btn active" data-watch-filter="all">全部</button>
+      <button class="filter-tab-btn" data-watch-filter="real">🔍 有真实地址</button>
+      <button class="filter-tab-btn" data-watch-filter="top">🏆 Top 榜</button>
+      <button class="filter-tab-btn" data-watch-filter="manual">📌 手动添加</button>
+    </div>
+    <div class="watch-add">
+      <input id="watchAddInput" placeholder="粘贴 FOMO 用户名 / 用户ID / 钱包地址，回车添加" spellcheck="false">
+      <button class="btn primary" id="watchAddBtn">＋ 添加关注</button>
+    </div>
+    <div id="watchBody" class="watch-list"></div>
   </div>
 
   <div id="trending" class="tabview" style="display:none">
@@ -104,6 +124,7 @@
     <!-- 动态分类过滤胶囊 -->
     <div class="feed-filters" id="feedFilters">
       <button class="feed-filter-btn active" data-feed-filter="all">🔥 全部动态</button>
+      <button class="feed-filter-btn" data-feed-filter="watch">🎯 仅关注列表</button>
       <button class="feed-filter-btn" data-feed-filter="collective">👥 巨鲸/集体异动</button>
       <button class="feed-filter-btn" data-feed-filter="new_token">⚡ 新币/暴涨</button>
       <button class="feed-filter-btn" data-feed-filter="thesis">💡 交易观点</button>

@@ -11,7 +11,9 @@
   let latestThesis = []; // feed 观点条目（thesis_created/manual），合并进跟单信号
   let currentSigFilter = "all";
   let currentFeedFilter = "all";
+  let currentWatchFilter = "all";
   let topSignalThreshold = 30;
+  let watchTopN = 30; // Top 榜前 N 名自动并入关注列表（动态，不持久化）
   let pushMinUsdThreshold = 200; // 任何代币单笔金额阈值（与设置联动，默认 $200）
   const AUTO_MS = 15000; // 排行榜/信号/Feed 轮询间隔（热门币走 WS 实时）
 
@@ -77,6 +79,36 @@
     return cu._evmReal || cu._solReal
       ? `<span class="fp-badge fp-real" title="自研库已反查,有真实钱包">✅真实钱包</span>`
       : `<span class="fp-badge fp-fake" title="仅平台展示地址">⚠️展示</span>`;
+  }
+
+  /* ---------- 关注列表（Watchlist）监控判定 ---------- */
+  /* uid 在排行榜中的名次（0 = 不在榜） */
+  function rankOfUser(uid) {
+    if (!uid) return 0;
+    const u = latestLeaderboard.find((x) => x && x.id === uid);
+    return u ? latestLeaderboard.indexOf(u) + 1 : 0;
+  }
+  /* 该 uid 是否在关注范围：关注列表（手动/反推） ∪ Top 榜前 watchTopN；主动移除（屏蔽）者除外 */
+  function isWatched(uid) {
+    if (!uid) return false;
+    if (window.__fomoUser && window.__fomoUser.isWatchBlocked && window.__fomoUser.isWatchBlocked(uid)) return false;
+    if (window.__fomoUser && window.__fomoUser.watchHas && window.__fomoUser.watchHas(uid)) return true;
+    const rank = rankOfUser(uid);
+    return rank > 0 && rank <= watchTopN;
+  }
+  /* 交易动态条目是否命中关注范围（支持 collective 多用户） */
+  function isWatchedFeed(f, body) {
+    const uid = (f && f.userId) || body.userId || (f && f.user && f.user.id);
+    if (uid && isWatched(uid)) return true;
+    if (Array.isArray(body.users) && body.users.length) {
+      return body.users.some((u) => isWatched(u && (u.id || u.userId)));
+    }
+    return false;
+  }
+  /* uid 是否已有真实钱包地址（预置库 / 反推收录） */
+  function hasRealAddrOf(uid) {
+    const cu = uid ? findLibUser({ id: uid }) : null;
+    return !!(cu && (cu._evmReal || cu._solReal));
   }
 
   function renderLeaderboard(list) {
@@ -252,7 +284,7 @@
       .filter(Boolean);
     const all = [...thesisRows, ...(list || [])];
 
-    // 过滤逻辑: all / top / top_buy（观点行无排行榜名次 → 自动被 top 过滤排除）
+    // 过滤逻辑: all / top / top_buy / watch（观点行无排行榜名次 → 自动被 top 过滤排除）
     const rows = all.filter((s) => {
       const tt = (s.body && Array.isArray(s.body.topTraders) && s.body.topTraders[0]) || {};
       const u = usersById.get(s.userId || tt.id);
@@ -260,6 +292,7 @@
       const isTop = Boolean(rank && rank <= topSignalThreshold);
       const action = signalAction(s);
 
+      if (currentSigFilter === "watch") return isWatched(s.userId || tt.id);
       if (currentSigFilter === "top") return isTop;
       if (currentSigFilter === "top_buy") return isTop && action.cls === "buy";
       return true; // "all"
@@ -421,11 +454,14 @@
       return;
     }
 
-    // 过滤逻辑: all / collective / new_token / thesis / milestone
+    // 过滤逻辑: all / watch / collective / new_token / thesis / milestone
     const filtered = feedList.filter((f) => {
       const body = typeof f.body === "object" && f.body ? f.body : {};
       const rawType = String(f.feedType || body.feedType || f.type || "").toLowerCase();
 
+      if (currentFeedFilter === "watch") {
+        return isWatchedFeed(f, body);
+      }
       if (currentFeedFilter === "collective") {
         return rawType.includes("multi_user") || rawType.includes("smart_following") || (Array.isArray(body.users) && body.users.length > 0);
       }
@@ -544,6 +580,130 @@
     if (jobs.length && window.translateInto) translateInto(tb, jobs);
   }
 
+  /* ---------- 关注列表（Watchlist）渲染与交互 ---------- */
+  function watchSourceLabel(w) {
+    if (w.source === "reveal") return '<span class="watch-src watch-src-real">🔍 真实地址</span>';
+    if (w.source === "top") return `<span class="watch-src watch-src-top">🏆 Top ${w.rank || "?"}</span>`;
+    return '<span class="watch-src watch-src-manual">📌 手动添加</span>';
+  }
+
+  function renderWatchlist() {
+    const body = $("#watchBody");
+    if (!body) return;
+    body.innerHTML = "";
+    const persisted = (window.__fomoUser && window.__fomoUser.watchItems) ? window.__fomoUser.watchItems() : [];
+    const persistedUids = new Set(persisted.map((w) => w.uid));
+    // 动态并入 Top 榜前 watchTopN（不持久化）
+    const topRows = latestLeaderboard.slice(0, watchTopN).map((u, i) => ({
+      uid: u.id,
+      displayName: u.displayName, userHandle: u.userHandle,
+      avatar: u.profilePictureLink, source: "top", addedAt: 0, rank: i + 1,
+    }));
+    const all = [
+      ...persisted
+        .map((w) => ({ ...w, rank: rankOfUser(w.uid) }))
+        .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)),
+      // Top 榜动态并入（主动移除/屏蔽的除外，即使回到前 N 也不并入）
+      ...topRows.filter((t) => !persistedUids.has(t.uid) && !(window.__fomoUser && window.__fomoUser.isWatchBlocked && window.__fomoUser.isWatchBlocked(t.uid))),
+    ];
+    let rows = all;
+    if (currentWatchFilter === "real") rows = all.filter((w) => hasRealAddrOf(w.uid));
+    else if (currentWatchFilter === "top") rows = all.filter((w) => w.source === "top");
+    else if (currentWatchFilter === "manual") rows = all.filter((w) => w.source !== "top");
+
+    const badge = $("#watchCountBadge");
+    if (badge) badge.textContent = `${rows.length} 人`;
+
+    if (!rows.length) {
+      body.innerHTML = `<div class="empty">${currentWatchFilter === "all" ? "关注列表为空：反推命中真实地址的用户会自动收录，Top 榜前 30 名自动并入，也可在上方手动添加。已移除的用户不会重新出现" : "该分类下暂无关注用户"}</div>`;
+      return;
+    }
+    rows.slice(0, 300).forEach((w) => {
+      const cu = findLibUser({ id: w.uid });
+      const realBadge = hasRealAddrOf(w.uid)
+        ? '<span class="fp-badge fp-real" title="有真实钱包">✅真实钱包</span>'
+        : cu ? '<span class="fp-badge fp-fake" title="仅平台展示地址">⚠️展示</span>' : "";
+      const avatar = w.avatar
+        ? `<img class="avatar" src="${esc(w.avatar)}">`
+        : `<div class="avatar"></div>`;
+      const item = document.createElement("div");
+      item.className = "watch-item" + (w.source === "top" ? " watch-top" : "");
+      item.innerHTML = `
+        <div class="trader clickable-user" data-uid="${esc(w.uid)}" title="点击查看用户详情">
+          ${avatar}
+          <div>
+            <div class="name">${esc(w.displayName || w.userHandle || "匿名")} ${realBadge}</div>
+            <div class="handle">@${esc(w.userHandle || "")} ${watchSourceLabel(w)}</div>
+          </div>
+        </div>
+        ${`<button class="btn watch-remove" data-watch-remove="${esc(w.uid)}" title="移除关注（${w.source === "top" ? "Top 榜用户移除后不再自动并入" : "从关注列表中移除"}）">✕</button>`}`;
+      body.appendChild(item);
+    });
+  }
+
+  /* 把输入解析为可关注的用户（用户名 / ID / 钱包地址） */
+  async function resolveWatchUser(q) {
+    const s = String(q || "").trim();
+    if (!s) return null;
+    const norm = s.toLowerCase();
+    // 1) 钱包地址 → 地址索引反查 uid
+    if (norm.startsWith("0x") || norm.length >= 40 || /^sol/i.test(norm)) {
+      const entry = window.__addrIndex && window.__addrIndex.get(norm);
+      if (entry && entry.uid) return { uid: entry.uid, displayName: entry.displayName, userHandle: entry.userHandle, avatar: "", via: "addr" };
+      try {
+        const d = await api("/v2/users/fuzzy-search?searchTerm=" + encodeURIComponent(s.replace(/^@/, "")));
+        const us = (d && d.responseObject && d.responseObject.users) || [];
+        if (us.length) { const u = us[0]; return { uid: u.id, displayName: u.displayName, userHandle: u.userHandle, avatar: u.profilePictureLink, via: "fuzzy" }; }
+      } catch (_e) {}
+      return null;
+    }
+    // 2) 排行榜精确匹配 handle / id / displayName
+    const ql = s.replace(/^@/, "").toLowerCase();
+    let m = latestLeaderboard.find((u) => (u.userHandle || "").toLowerCase() === ql || (u.id || "").toLowerCase() === ql);
+    if (!m) m = latestLeaderboard.find((u) => (u.displayName || "").toLowerCase() === ql);
+    if (m) return { uid: m.id, displayName: m.displayName, userHandle: m.userHandle, avatar: m.profilePictureLink, via: "lb" };
+    // 3) 用户缓存匹配（反推收录过的用户）
+    if (window.__userCache && window.__userCache.get) {
+      const hit = window.__userCache.get(ql) || window.__userCache.get("h:" + ql);
+      if (hit && hit.id) return { uid: hit.id, displayName: hit.displayName, userHandle: hit.userHandle, avatar: hit.profilePictureLink || "", via: "cache" };
+    }
+    // 4) 兜底 fuzzy-search
+    try {
+      const d = await api("/v2/users/fuzzy-search?searchTerm=" + encodeURIComponent(ql));
+      const us = (d && d.responseObject && d.responseObject.users) || [];
+      if (us.length) { const u = us[0]; return { uid: u.id, displayName: u.displayName, userHandle: u.userHandle, avatar: u.profilePictureLink, via: "fuzzy" }; }
+    } catch (_e) {}
+    return null;
+  }
+
+  async function addWatchFromInput() {
+    const input = $("#watchAddInput");
+    if (!input) return;
+    const q = input.value.trim();
+    if (!q || !window.__fomoUser || !window.__fomoUser.watchAdd) return;
+    const r = await resolveWatchUser(q);
+    if (!r || !r.uid) {
+      input.placeholder = "未找到该用户，请检查用户名 / ID / 地址";
+      input.classList.add("err");
+      setTimeout(() => { input.classList.remove("err"); }, 1500);
+      return;
+    }
+    await window.__fomoUser.watchAdd(r.uid, { displayName: r.displayName, userHandle: r.userHandle, avatar: r.avatar }, "manual");
+    input.value = "";
+    input.placeholder = "粘贴 FOMO 用户名 / 用户ID / 钱包地址，回车添加";
+    renderWatchlist();
+    renderSignals(latestSignals);
+    renderFeed(latestFeed);
+  }
+
+  async function removeWatch(uid) {
+    if (!uid || !window.__fomoUser || !window.__fomoUser.watchRemove) return;
+    await window.__fomoUser.watchRemove(uid);
+    renderWatchlist();
+    renderSignals(latestSignals);
+    renderFeed(latestFeed);
+  }
+
   /* ---------- 数据加载 ---------- */
   let loading = false;
   async function loadAll() {
@@ -561,6 +721,9 @@
       const sigList = Array.isArray(sigItems) ? sigItems : [];
       latestLeaderboard = lbList;
       latestSignals = sigList;
+      // 关注列表：同步持久化数据 + 渲染（Top 榜前 N 动态并入）
+      if (window.__fomoUser && window.__fomoUser.loadWatchlist) await window.__fomoUser.loadWatchlist();
+      renderWatchlist();
       // 建立 用户/地址 索引（供点击详情 + 地址反查）
       if (window.__fomoUser) {
         lbList.forEach((u) => window.__fomoUser.indexUser(u));
@@ -714,6 +877,28 @@
       currentFeedFilter = btn.dataset.feedFilter || "all";
       renderFeed(latestFeed);
     });
+  });
+
+  /* ---------- 关注列表交互 ---------- */
+  document.querySelectorAll("[data-watch-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("[data-watch-filter]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentWatchFilter = btn.dataset.watchFilter || "all";
+      renderWatchlist();
+    });
+  });
+  const watchAddBtn = $("#watchAddBtn");
+  if (watchAddBtn) watchAddBtn.addEventListener("click", addWatchFromInput);
+  const watchAddInput = $("#watchAddInput");
+  if (watchAddInput) watchAddInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addWatchFromInput(); });
+  const watchBody = $("#watchBody");
+  if (watchBody) watchBody.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-watch-remove]");
+    if (btn) {
+      e.stopPropagation();
+      removeWatch(btn.getAttribute("data-watch-remove"));
+    }
   });
 
   /* ---------- 控制 ---------- */
